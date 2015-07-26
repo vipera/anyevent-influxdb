@@ -1,5 +1,7 @@
 Revision history for Perl extension AnyEvent::InfluxDB.
 
 {{$NEXT}}
+
+0.01   2015-07-27 00:22:39
 	Initial version.
 
