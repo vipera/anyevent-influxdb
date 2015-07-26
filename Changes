@@ -1,0 +1,5 @@
+Revision history for Perl extension AnyEvent::InfluxDB.
+
+{{$NEXT}}
+	Initial version.
+
