@@ -40,6 +40,7 @@ has '_server_uri' => (
     use AnyEvent::Socket;
     use AnyEvent::Handle;
     use AnyEvent::InfluxDB;
+    use Monitoring::Plugin::Performance;
 
     my $db = AnyEvent::InfluxDB->new(
         server => 'http://localhost:8086',
@@ -59,9 +60,28 @@ has '_server_uri' => (
             line => sub {
                 my (undef, $line) = @_;
 
+                # Disk\t/=382MB;15264;15269;; /var=218MB;9443;9448
+                my ($measurement, $perfstring) = split(/\t/, $line);
+
+                my @perfdata
+                    = Monitoring::Plugin::Performance->parse_perfstring($perfstring);
+
                 $db->write(
                     database => 'mydb',
-                    data => $line,
+                    data => [
+                        map {
+                            +{
+                                measurement => $measurement,
+                                tags => {
+                                    label => $_->label,
+                                },
+                                fields => {
+                                    value => $_->value,
+                                    uom => '"'. $_->uom .'"',
+                                },
+                            }
+                        } @perfdata
+                    ],
                     on_success => sub { print "$line written\n"; },
                     on_error => sub { print "$line error: @_\n"; },
                 );
@@ -80,7 +100,9 @@ has '_server_uri' => (
 
 =head1 DESCRIPTION
 
-Asynchronous client library for InfluxDB time-series database v0.9.2 L<https://influxdb.com>.
+Asynchronous client library for InfluxDB time-series database L<https://influxdb.com>.
+
+This version is meant to be used with InfluxDB v0.10 and newer.
 
 =head1 METHODS
 
@@ -196,13 +218,72 @@ sub _http_request {
         };
 };
 
+=head2 ping
+
+    $cv = AE::cv;
+    $db->ping(
+        wait_for_leader => 2,
+
+        on_success => $cv,
+        on_error => sub {
+            $cv->croak("Failed to ping cluster leader: @_");
+        }
+    );
+    my $version = $cv->recv;
+
+Check the leader of the cluster to ensure that the leader is available and ready.
+The optional parameter C<wait_for_leader> specifies the number of seconds to wait
+before returning a response.
+
+The required C<on_success> code reference is executed if request was successful
+with the value of C<X-Influxdb-Version> response header as argument,
+otherwise executes the required C<on_error> code reference with the value of
+C<Reason> response header as argument.
+
+=cut
+
+sub ping {
+    my ($self, %args) = @_;
+
+    my $url = $self->_make_url('/ping', {
+        (
+            exists $args{wait_for_leader} ?
+                ( wait_for_leader => $args{wait_for_leader} )
+                :
+                ()
+        )
+    });
+
+    $self->_http_request( GET => $url->as_string,
+        sub {
+            my ($body, $headers) = @_;
+            use DDP;
+            p($headers);
+
+            if ( $headers->{Status} eq '204' ) {
+                $args{on_success}->( $headers->{'x-influxdb-version'} );
+            } else {
+                $args{on_error}->( $headers->{Reason} || $body );
+            }
+        }
+    );
+}
+
+
 =head2 Database Management
 
 =head3 create_database
 
     $cv = AE::cv;
     $db->create_database(
+        # raw query
+        q => "CREATE DATABASE IF NOT EXISTS mydb",
+
+        # or query created from arguments
         database => "mydb",
+        if_not_exists => 1,
+
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to create database: @_");
@@ -210,7 +291,9 @@ sub _http_request {
     );
     $cv->recv;
 
-Creates specified by C<database> argument database.
+Creates specified by C<database> argument database. The optional parameter
+C<if_not_exists> if set to true value, allows to avoid error if the database
+already exists.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
@@ -220,8 +303,19 @@ otherwise executes the required C<on_error> code reference.
 sub create_database {
     my ($self, %args) = @_;
 
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'CREATE DATABASE '.
+            (
+                $args{if_not_exists} ? 'IF NOT EXISTS ' : ''
+            )
+            .$args{database};
+    }
+
     my $url = $self->_make_url('/query', {
-        q => 'CREATE DATABASE '. $args{database}
+        q => $q,
     });
 
     $self->_http_request( GET => $url->as_string,
@@ -241,7 +335,14 @@ sub create_database {
 
     $cv = AE::cv;
     $db->drop_database(
+        # raw query
+        q => "DROP DATABASE IF EXISTS mydb",
+
+        # or query created from arguments
         database => "mydb",
+        if_exists => 1,
+
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to drop database: @_");
@@ -249,7 +350,9 @@ sub create_database {
     );
     $cv->recv;
 
-Drops specified by C<database> argument database.
+Drops specified by C<database> argument database.  The optional parameter
+C<if_exists> if set to true value, allows to avoid error if the database
+does not exists.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
@@ -259,8 +362,19 @@ otherwise executes the required C<on_error> code reference.
 sub drop_database {
     my ($self, %args) = @_;
 
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'DROP DATABASE '
+            .
+            (
+                $args{if_exists} ? 'IF EXISTS ' : ''
+            ) . $args{database};
+    }
+
     my $url = $self->_make_url('/query', {
-        q => 'DROP DATABASE '. $args{database}
+        q => $q,
     });
 
     $self->_http_request( GET => $url->as_string,
@@ -275,6 +389,7 @@ sub drop_database {
         }
     );
 }
+
 =head3 show_databases
 
     $cv = AE::cv;
@@ -319,18 +434,140 @@ sub show_databases {
     );
 }
 
+=head3 show_shards
+
+    $cv = AE::cv;
+    $db->show_shards(
+        on_success => $cv,
+        on_error => sub {
+            $cv->croak("Failed to list shards: @_");
+        }
+    );
+    my $shards = $cv->recv;
+    for my $database ( sort keys %{ $shards } ) {
+        print "Database: $database\n";
+        for my $s ( @{ $shards->{$database} } ) {
+            print " * $_: $s->{$_}\n" for sort keys %{ $s };
+        }
+    }
+
+Returns a hash reference with database name as keys and their shards as values.
+
+The required C<on_success> code reference is executed if request was successful,
+otherwise executes the required C<on_error> code reference.
+
+=cut
+
+sub show_shards {
+    my ($self, %args) = @_;
+
+    my $url = $self->_make_url('/query', {
+        q => 'SHOW SHARDS'
+    });
+
+    $self->_http_request( GET => $url->as_string,
+        sub {
+            my ($body, $headers) = @_;
+
+            if ( $headers->{Status} eq '200' ) {
+                my $data = decode_json($body);
+                my $shards = {};
+                for my $res ( @{ $data->{results}->[0]->{series} || [] } ) {
+                    my $cols = $res->{columns};
+                    my $values = $res->{values};
+                    $shards->{ $res->{name } } = [
+                        map {
+                            +{
+                                zip(@$cols, @$_)
+                            }
+                        } @{ $values || [] }
+                    ];
+                }
+                $args{on_success}->($shards);
+            } else {
+                $args{on_error}->( $body );
+            }
+        }
+    );
+}
+
+=head3 show_shard_groups
+
+    $cv = AE::cv;
+    $db->show_shard_groups(
+        on_success => $cv,
+        on_error => sub {
+            $cv->croak("Failed to list shard groups: @_");
+        }
+    );
+    my @shard_groups = $cv->recv;
+    for my $sg ( @shard_groups ) {
+        print "ID: $sg->{id}\n";
+        print "Database: $sg->{database}\n";
+        print "Retention Policy: $sg->{retention_policy}\n";
+        print "Start Time: $sg->{start_time}\n";
+        print "End Time: $sg->{end_time}\n";
+        print "Expiry Time: $sg->{expiry_time}\n";
+    }
+
+Returns a list of hash references with keys C<name>, C<duration>, C<replicaN>
+and C<default> for each replication policy defined on database C<database>.
+
+Returns a hash reference with database name as keys and their shards as values.
+
+The required C<on_success> code reference is executed if request was successful,
+otherwise executes the required C<on_error> code reference.
+
+=cut
+
+sub show_shard_groups {
+    my ($self, %args) = @_;
+
+    my $url = $self->_make_url('/query', {
+        q => 'SHOW SHARD GROUPS'
+    });
+
+    $self->_http_request( GET => $url->as_string,
+        sub {
+            my ($body, $headers) = @_;
+
+            if ( $headers->{Status} eq '200' ) {
+                my $data = decode_json($body);
+                my $res = $data->{results}->[0]->{series}->[0];
+                my $cols = $res->{columns};
+                my $values = $res->{values};
+                my @shard_groups = (
+                    map {
+                        +{
+                            zip(@$cols, @$_)
+                        }
+                    } @{ $values || [] }
+                );
+                $args{on_success}->(@shard_groups);
+            } else {
+                $args{on_error}->( $body );
+            }
+        }
+    );
+}
+
 =head2 Retention Policy Management
 
 =head3 create_retention_policy
 
     $cv = AE::cv;
     $db->create_retention_policy(
+        # raw query
+        q => "CREATE RETENTION POLICY last_day ON mydb DURATION 1d REPLICATION 1",
+
+        # or query created from arguments
         name => 'last_day',
         database => 'mydb',
         duration => '1d',
         replication => 1,
         default => 0,
 
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to create retention policy: @_");
@@ -350,15 +587,20 @@ otherwise executes the required C<on_error> code reference.
 sub create_retention_policy {
     my ($self, %args) = @_;
 
-    my $q = 'CREATE RETENTION POLICY '. $args{name}
-        .' ON '. $args{database}
-        .' DURATION '. $args{duration}
-        .' REPLICATION '. $args{replication};
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'CREATE RETENTION POLICY '. $args{name}
+            .' ON '. $args{database}
+            .' DURATION '. $args{duration}
+            .' REPLICATION '. $args{replication};
 
-    $q .= ' DEFAULT' if $args{default};
+        $q .= ' DEFAULT' if $args{default};
+    }
 
     my $url = $self->_make_url('/query', {
-        q => $q
+        q => $q,
     });
 
     $self->_http_request( GET => $url->as_string,
@@ -378,13 +620,18 @@ sub create_retention_policy {
 
     $cv = AE::cv;
     $db->alter_retention_policy(
+        # raw query
+        q => "ALTER RETENTION POLICY last_day ON mydb DURATION 1d REPLICATION 1 DEFAULT",
+
+        # or query created from arguments
         name => 'last_day',
         database => 'mydb',
 
         duration => '1d',
         replication => 1,
-        default => 0,
+        default => 1,
 
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to alter retention policy: @_");
@@ -404,12 +651,17 @@ otherwise executes the required C<on_error> code reference.
 sub alter_retention_policy {
     my ($self, %args) = @_;
 
-    my $q = 'ALTER RETENTION POLICY '. $args{name}
-        .' ON '. $args{database};
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'ALTER RETENTION POLICY '. $args{name}
+            .' ON '. $args{database};
 
-    $q .= ' DURATION '. $args{duration} if exists $args{duration};
-    $q .= ' REPLICATION '. $args{replication} if exists $args{replication};;
-    $q .= ' DEFAULT' if $args{default};
+        $q .= ' DURATION '. $args{duration} if exists $args{duration};
+        $q .= ' REPLICATION '. $args{replication} if exists $args{replication};;
+        $q .= ' DEFAULT' if $args{default};
+    }
 
     my $url = $self->_make_url('/query', {
         q => $q
@@ -432,8 +684,13 @@ sub alter_retention_policy {
 
     $cv = AE::cv;
     $db->show_retention_policies(
+        # raw query
+        q => "SHOW RETENTION POLICIES ON mydb",
+
+        # or query created from arguments
         database => 'mydb',
 
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to list retention policies: @_");
@@ -458,8 +715,15 @@ otherwise executes the required C<on_error> code reference.
 sub show_retention_policies {
     my ($self, %args) = @_;
 
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'SHOW RETENTION POLICIES ON '. $args{database};
+    }
+
     my $url = $self->_make_url('/query', {
-        q => 'SHOW RETENTION POLICIES ON '. $args{database}
+        q => $q,
     });
 
     $self->_http_request( GET => $url->as_string,
@@ -486,16 +750,74 @@ sub show_retention_policies {
     );
 }
 
+=head3 drop_retention_policy
+
+    $cv = AE::cv;
+    $db->drop_retention_policy(
+        # raw query
+        q => "DROP RETENTION POLICY last_day ON mydb",
+
+        # or query created from arguments
+        name => "last_day",
+        database => "mydb",
+
+        # callbacks
+        on_success => $cv,
+        on_error => sub {
+            $cv->croak("Failed to drop retention policy: @_");
+        }
+    );
+    $cv->recv;
+
+Drops specified by C<name> retention policy on database C<database>.
+
+The required C<on_success> code reference is executed if request was successful,
+otherwise executes the required C<on_error> code reference.
+
+=cut
+
+sub drop_retention_policy {
+    my ($self, %args) = @_;
+
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'DROP RETENTION POLICY '. $args{name} .' ON '. $args{database};
+    }
+
+    my $url = $self->_make_url('/query', {
+        q => $q,
+    });
+
+    $self->_http_request( GET => $url->as_string,
+        sub {
+            my ($body, $headers) = @_;
+
+            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+                $args{on_success}->();
+            } else {
+                $args{on_error}->( $body );
+            }
+        }
+    );
+}
+
 =head2 User Management
 
 =head3 create_user
 
     $cv = AE::cv;
     $db->create_user(
+        # raw query
+        q => "CREATE USER jdoe WITH PASSWORD 'mypassword' WITH ALL PRIVILEGES",
+
+        # or query created from arguments
         username => 'jdoe',
         password => 'mypassword',
         all_privileges => 1,
 
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to create user: @_");
@@ -516,10 +838,15 @@ otherwise executes the required C<on_error> code reference.
 sub create_user {
     my ($self, %args) = @_;
 
-    my $q = 'CREATE USER '. $args{username}
-        .' WITH PASSWORD \''. $args{password} .'\'';
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'CREATE USER '. $args{username}
+            .' WITH PASSWORD \''. $args{password} .'\'';
 
-    $q .= ' WITH ALL PRIVILEGES' if $args{all_privileges};
+        $q .= ' WITH ALL PRIVILEGES' if $args{all_privileges};
+    }
 
     my $url = $self->_make_url('/query', {
         q => $q
@@ -542,9 +869,14 @@ sub create_user {
 
     $cv = AE::cv;
     $db->set_user_password(
+        # raw query
+        q => "SET PASSWORD FOR jdoe = 'otherpassword'",
+
+        # or query created from arguments
         username => 'jdoe',
         password => 'otherpassword',
 
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to set password: @_");
@@ -554,6 +886,8 @@ sub create_user {
 
 Sets password to C<password> for the user identified by C<username>.
 
+Note: C<password> will be automatically enclosed in single quotes.
+
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
 
@@ -562,8 +896,13 @@ otherwise executes the required C<on_error> code reference.
 sub set_user_password {
     my ($self, %args) = @_;
 
-    my $q = 'SET PASSWORD FOR '. $args{username}
-        .' = \''. $args{password} .'\'';
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'SET PASSWORD FOR '. $args{username}
+            .' = \''. $args{password} .'\'';
+    }
 
     my $url = $self->_make_url('/query', {
         q => $q
@@ -640,6 +979,10 @@ sub show_users {
 
     $cv = AE::cv;
     $db->grant_privileges(
+        # raw query
+        q => "GRANT ALL ON mydb TO jdoe",
+
+        # or query created from arguments
         username => 'jdoe',
 
         # privileges at single database
@@ -649,6 +992,7 @@ sub show_users {
         # or to grant cluster administration privileges
         all_privileges => 1,
 
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to grant privileges: @_");
@@ -668,14 +1012,19 @@ otherwise executes the required C<on_error> code reference.
 sub grant_privileges {
     my ($self, %args) = @_;
 
-    my $q = 'GRANT ';
-
-    if ( $args{all_privileges} ) {
-        $q .= 'ALL PRIVILEGES';
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
     } else {
-        $q .= $args{access} .' ON '. $args{database};
+        $q = 'GRANT ';
+
+        if ( $args{all_privileges} ) {
+            $q .= 'ALL PRIVILEGES';
+        } else {
+            $q .= $args{access} .' ON '. $args{database};
+        }
+        $q .= ' TO '. $args{username};
     }
-    $q .= ' TO '. $args{username};
 
     my $url = $self->_make_url('/query', {
         q => $q
@@ -694,10 +1043,82 @@ sub grant_privileges {
     );
 }
 
+=head3 show_grants
+
+    $cv = AE::cv;
+    $db->show_grants(
+        # raw query
+        q => "SHOW GRANTS FOR jdoe",
+
+        # or query created from arguments
+        username => 'jdoe',
+
+        # callbacks
+        on_success => $cv,
+        on_error => sub {
+            $cv->croak("Failed to list users: @_");
+        }
+    );
+    my @grants = $cv->recv;
+    for my $g ( @grants ) {
+        print "Database: $g->{database}\n";
+        print "Privilege: $g->{privilege}\n";
+    }
+
+Returns a list of hash references with keys C<database> and C<privilege>
+describing the privileges granted for database to given user.
+
+The required C<on_success> code reference is executed if request was successful,
+otherwise executes the required C<on_error> code reference.
+
+=cut
+
+sub show_grants {
+    my ($self, %args) = @_;
+
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'SHOW GRANTS FOR '. $args{username};
+    }
+
+    my $url = $self->_make_url('/query', {
+        q => $q
+    });
+
+    $self->_http_request( GET => $url->as_string,
+        sub {
+            my ($body, $headers) = @_;
+
+            if ( $headers->{Status} eq '200' ) {
+                my $data = decode_json($body);
+                my $res = $data->{results}->[0]->{series}->[0];
+                my $cols = $res->{columns};
+                my $values = $res->{values};
+                my @grants = (
+                    map {
+                        +{
+                            zip(@$cols, @$_)
+                        }
+                    } @{ $values || [] }
+                );
+                $args{on_success}->(@grants);
+            } else {
+                $args{on_error}->( $body );
+            }
+        }
+    );
+}
+
 =head3 revoke_privileges
 
     $cv = AE::cv;
     $db->revoke_privileges(
+        # raw query
+        q => "REVOKE WRITE ON mydb FROM jdoe",
+
+        # or query created from arguments
         username => 'jdoe',
 
         # privileges at single database
@@ -707,6 +1128,7 @@ sub grant_privileges {
         # or to revoke cluster administration privileges
         all_privileges => 1,
 
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to revoke privileges: @_");
@@ -727,14 +1149,19 @@ otherwise executes the required C<on_error> code reference.
 sub revoke_privileges {
     my ($self, %args) = @_;
 
-    my $q = 'REVOKE ';
-
-    if ( $args{all_privileges} ) {
-        $q .= 'ALL PRIVILEGES';
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
     } else {
-        $q .= $args{access} .' ON '. $args{database};
+        $q = 'REVOKE ';
+
+        if ( $args{all_privileges} ) {
+            $q .= 'ALL PRIVILEGES';
+        } else {
+            $q .= $args{access} .' ON '. $args{database};
+        }
+        $q .= ' FROM '. $args{username};
     }
-    $q .= ' FROM '. $args{username};
 
     my $url = $self->_make_url('/query', {
         q => $q
@@ -757,8 +1184,13 @@ sub revoke_privileges {
 
     $cv = AE::cv;
     $db->drop_user(
+        # raw query
+        q => "DROP USER jdoe",
+
+        # or query created from arguments
         username => 'jdoe',
 
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to drop user: @_");
@@ -777,7 +1209,12 @@ otherwise executes the required C<on_error> code reference.
 sub drop_user {
     my ($self, %args) = @_;
 
-    my $q = 'DROP USER '. $args{username};
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'DROP USER '. $args{username};
+    }
 
     my $url = $self->_make_url('/query', {
         q => $q
@@ -803,8 +1240,23 @@ sub drop_user {
     $cv = AE::cv;
     $db->show_measurements(
         database => 'mydb',
-        where => "host = 'server02'",
 
+        # raw query
+        q => "SHOW MEASUREMENTS WITH MEASUREMENT =~ /cpu_load.*/"
+            ." WHERE host = 'server02'"
+            ." ORDER BY region"
+            ." LIMIT 10 OFFSET 3",
+
+        # or query created from arguments
+        measurement => '/cpu_load.*/',
+        where => q{host = 'server02'},
+
+        order_by => 'region',
+
+        limit => 10,
+        offset => 3,
+
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to list measurements: @_");
@@ -813,8 +1265,11 @@ sub drop_user {
     my @measurements = $cv->recv;
     print "$_\n" for @measurements;
 
-Returns names of measurements from database C<database>, filtered by optional
-C<where> clause.
+Returns names of measurements from database C<database>, optionally filtering the
+matching the measurements with regular expression C<measurement> and filtered by
+optional C<where> clause.
+If the C<measurement> is not enclosed in C<//> then it will be treated as name of
+the measurement.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
@@ -824,10 +1279,33 @@ otherwise executes the required C<on_error> code reference.
 sub show_measurements {
     my ($self, %args) = @_;
 
-    my $q = 'SHOW MEASUREMENTS';
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'SHOW MEASUREMENTS';
 
-    if ( my $cond = $args{where} ) {
-        $q .= ' WHERE '. $cond;
+        if ( my $measurement = $args{measurement} ) {
+            $q .= ' WITH MEASUREMENT '
+                . ( $measurement =~ /^\/.*\/$/ ? '=~' : '=' )
+                . $measurement;
+        }
+
+        if ( my $cond = $args{where} ) {
+            $q .= ' WHERE '. $cond;
+        }
+
+        if ( my $order_by = $args{order_by} ) {
+            $q .= ' ORDER BY '. $order_by;
+        }
+
+        if ( my $limit = $args{limit} ) {
+            $q .= ' LIMIT '. $limit;
+
+            if ( my $offset = $args{offset} ) {
+                $q .= ' OFFSET '. $offset;
+            }
+        }
     }
 
     my $url = $self->_make_url('/query', {
@@ -859,8 +1337,14 @@ sub show_measurements {
     $cv = AE::cv;
     $db->drop_measurement(
         database => 'mydb',
+
+        # raw query
+        q => "DROP MEASUREMENT cpu_load",
+
+        # or query created from arguments
         measurement => 'cpu_load',
 
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to drop measurement: @_");
@@ -878,7 +1362,12 @@ otherwise executes the required C<on_error> code reference.
 sub drop_measurement {
     my ($self, %args) = @_;
 
-    my $q = 'DROP MEASUREMENT '. $args{measurement};
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'DROP MEASUREMENT '. $args{measurement};
+    }
 
     my $url = $self->_make_url('/query', {
         db => $args{database},
@@ -904,9 +1393,22 @@ sub drop_measurement {
     $db->show_series(
         database => 'mydb',
 
-        measurement => 'cpu_load',
-        where => "host = 'server02'",
+        # raw query
+        q => "SHOW SERIES FROM cpu_load"
+            ." WHERE host = 'server02'"
+            ." ORDER BY region"
+            ." LIMIT 10 OFFSET 3",
 
+        # or query created from arguments
+        measurement => 'cpu_load',
+        where => q{host = 'server02'},
+
+        order_by => 'region',
+
+        limit => 10,
+        offset => 3,
+
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to list series: @_");
@@ -921,7 +1423,7 @@ sub drop_measurement {
     }
 
 Returns from database C<database> and optional measurement C<measurement>,
-optionally filtered by the C<where> clause, an hash reference with measurements
+optionally filtered by the C<where> clause, a hash reference with measurements
 as keys and their unique tag sets as values.
 
 The required C<on_success> code reference is executed if request was successful,
@@ -932,14 +1434,31 @@ otherwise executes the required C<on_error> code reference.
 sub show_series {
     my ($self, %args) = @_;
 
-    my $q = 'SHOW SERIES';
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'SHOW SERIES';
 
-    if ( my $measurement = $args{measurement} ) {
-        $q .= ' FROM '. $measurement;
-    }
+        if ( my $measurement = $args{measurement} ) {
+            $q .= ' FROM '. $measurement;
+        }
 
-    if ( my $cond = $args{where} ) {
-        $q .= ' WHERE '. $cond;
+        if ( my $cond = $args{where} ) {
+            $q .= ' WHERE '. $cond;
+        }
+
+        if ( my $order_by = $args{order_by} ) {
+            $q .= ' ORDER BY '. $order_by;
+        }
+
+        if ( my $limit = $args{limit} ) {
+            $q .= ' LIMIT '. $limit;
+
+            if ( my $offset = $args{offset} ) {
+                $q .= ' OFFSET '. $offset;
+            }
+        }
     }
 
     my $url = $self->_make_url('/query', {
@@ -978,9 +1497,15 @@ sub show_series {
     $cv = AE::cv;
     $db->drop_series(
         database => 'mydb',
-        measurement => 'cpu_load',
-        where => "host = 'server02'",
 
+        # raw query
+        q => "DROP SERIES FROM cpu_load WHERE host = 'server02'",
+
+        # or query created from arguments
+        measurement => 'cpu_load',
+        where => q{host = 'server02'},
+
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to drop measurement: @_");
@@ -988,8 +1513,8 @@ sub show_series {
     );
     $cv->recv;
 
-Drops series from measurement C<measurement> filtered by C<where> clause from
-database C<database>.
+Drops series from measurement C<measurement> and/or filtered by C<where> clause
+from database C<database>.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
@@ -999,14 +1524,19 @@ otherwise executes the required C<on_error> code reference.
 sub drop_series {
     my ($self, %args) = @_;
 
-    my $q = 'DROP SERIES';
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'DROP SERIES';
 
-    if ( my $measurement = $args{measurement} ) {
-        $q .= ' FROM '. $measurement;
-    }
+        if ( my $measurement = $args{measurement} ) {
+            $q .= ' FROM '. $measurement;
+        }
 
-    if ( my $cond = $args{where} ) {
-        $q .= ' WHERE '. $cond;
+        if ( my $cond = $args{where} ) {
+            $q .= ' WHERE '. $cond;
+        }
     }
 
     my $url = $self->_make_url('/query', {
@@ -1033,8 +1563,17 @@ sub drop_series {
     $db->show_tag_keys(
         database => 'mydb',
 
-        measurement => 'cpu_load',
+        # raw query
+        q => "SHOW TAG KEYS FROM cpu_load WHERE host = 'server02' LIMIT 10 OFFSET 3",
 
+        # or query created from arguments
+        measurement => 'cpu_load',
+        where => q{host = 'server02'},
+
+        limit => 10,
+        offset => 3,
+
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to list tag keys: @_");
@@ -1046,9 +1585,11 @@ sub drop_series {
         print " * $_\n" for @{ $tag_keys->{$measurement} };
     }
 
-Returns from database C<database> and optional measurement C<measurement>,
-optionally filtered by the C<where> clause, an hash reference with measurements
-as keys and their unique tag keys as values.
+Returns a hash reference with measurements as keys and their unique tag keys
+as values from database C<database> and optional measurement C<measurement>,
+optionally filtered by the C<where> clause, grouped by C<group_by> and number
+of results limited to C<limit> with offset C<offset>.
+To limit number of returned series use C<slimit> with offset C<soffset>.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
@@ -1058,14 +1599,19 @@ otherwise executes the required C<on_error> code reference.
 sub show_tag_keys {
     my ($self, %args) = @_;
 
-    my $q = 'SHOW TAG KEYS';
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'SHOW TAG KEYS';
 
-    if ( my $measurement = $args{measurement} ) {
-        $q .= ' FROM '. $measurement;
-    }
+        if ( my $measurement = $args{measurement} ) {
+            $q .= ' FROM '. $measurement;
+        }
 
-    if ( my $cond = $args{where} ) {
-        $q .= ' WHERE '. $cond;
+        if ( my $cond = $args{where} ) {
+            $q .= ' WHERE '. $cond;
+        }
     }
 
     my $url = $self->_make_url('/query', {
@@ -1102,6 +1648,10 @@ sub show_tag_keys {
     $db->show_tag_values(
         database => 'mydb',
 
+        # raw query
+        q => "SHOW TAG VALUES FROM cpu_load WITH KEY = 'host' WHERE host = 'server02'",
+
+        # or query created from arguments
         measurement => 'cpu_load',
 
         # single key
@@ -1109,8 +1659,9 @@ sub show_tag_keys {
         # or a list of keys
         keys => [qw( host region )],
 
-        where => "host = 'server02'",
+        where => q{host = 'server02'},
 
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to list tag values: @_");
@@ -1124,7 +1675,7 @@ sub show_tag_keys {
 
 Returns from database C<database> and optional measurement C<measurement>,
 values from a single tag key C<key> or a list of tag keys C<keys>, optionally
-filtered by the C<where> clause, an hash reference with tag keys
+filtered by the C<where> clause, a hash reference with tag keys
 as keys and their unique tag values as values.
 
 The required C<on_success> code reference is executed if request was successful,
@@ -1135,21 +1686,26 @@ otherwise executes the required C<on_error> code reference.
 sub show_tag_values {
     my ($self, %args) = @_;
 
-    my $q = 'SHOW TAG VALUES';
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'SHOW TAG VALUES';
 
-    if ( my $measurement = $args{measurement} ) {
-        $q .= ' FROM '. $measurement;
-    }
+        if ( my $measurement = $args{measurement} ) {
+            $q .= ' FROM '. $measurement;
+        }
 
-    if ( my $keys = $args{keys} ) {
-        $q .= ' WITH KEY IN ('. join(", ", @$keys) .')';
-    }
-    elsif ( my $key = $args{key} ) {
-        $q .= ' WITH KEY = '. $key;
-    }
+        if ( my $keys = $args{keys} ) {
+            $q .= ' WITH KEY IN ('. join(", ", @$keys) .')';
+        }
+        elsif ( my $key = $args{key} ) {
+            $q .= ' WITH KEY = '. $key;
+        }
 
-    if ( my $cond = $args{where} ) {
-        $q .= ' WHERE '. $cond;
+        if ( my $cond = $args{where} ) {
+            $q .= ' WHERE '. $cond;
+        }
     }
 
     my $url = $self->_make_url('/query', {
@@ -1181,16 +1737,101 @@ sub show_tag_values {
     );
 }
 
+=head3 show_field_keys
+
+    $cv = AE::cv;
+    $db->show_field_keys(
+        database => 'mydb',
+
+        # raw query
+        q => "SHOW FIELD KEYS FROM cpu_load",
+
+        # or query created from arguments
+        measurement => 'cpu_load',
+
+        # callbacks
+        on_success => $cv,
+        on_error => sub {
+            $cv->croak("Failed to list field keys: @_");
+        }
+    );
+    my $field_keys = $cv->recv;
+    for my $measurement ( sort keys %{ $field_keys } ) {
+        print "Measurement: $measurement\n";
+        print " * $_\n" for @{ $field_keys->{$measurement} };
+    }
+
+Returns field keys from all measurements from database C<database>. Single
+measurement can be specified with optional C<measurement> parameter.
+
+The required C<on_success> code reference is executed if request was successful,
+otherwise executes the required C<on_error> code reference.
+
+=cut
+
+sub show_field_keys {
+    my ($self, %args) = @_;
+
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'SHOW FIELD KEYS';
+
+        if ( my $measurement = $args{measurement} ) {
+            $q .= ' FROM '. $measurement;
+        }
+    }
+
+    my $url = $self->_make_url('/query', {
+        db => $args{database},
+        q => $q
+    });
+
+    $self->_http_request( GET => $url->as_string,
+        sub {
+            my ($body, $headers) = @_;
+
+            if ( $headers->{Status} eq '200' ) {
+                my $data = decode_json($body);
+                my $field_keys = {};
+                for my $res ( @{ $data->{results}->[0]->{series} || [] } ) {
+                    my $values = $res->{values};
+                    $field_keys->{ $res->{name } } = [
+                        map {
+                            @$_
+                        } @{ $values || [] }
+                    ];
+                }
+                $args{on_success}->($field_keys);
+            } else {
+                $args{on_error}->( $body );
+            }
+        }
+    );
+}
+
 =head2 Continuous Queries
 
 =head3 create_continuous_query
 
     $cv = AE::cv;
     $db->create_continuous_query(
+        # raw query
+        q => 'CREATE CONTINUOUS QUERY per5minutes ON mydb'
+            .' RESAMPLE EVERY 10s FOR 10m'
+            .' BEGIN'
+            .' SELECT MEAN(value) INTO "cpu_load_per5m" FROM cpu_load GROUP BY time(5m)'
+            .' END',
+
+        # or query created from arguments
         database => 'mydb',
         name => 'per5minutes',
+        every => '10s',
+        for => '2m',
         query => 'SELECT MEAN(value) INTO "cpu_load_per5m" FROM cpu_load GROUP BY time(5m)',
 
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to create continuous query: @_");
@@ -1199,7 +1840,8 @@ sub show_tag_values {
     $cv->recv;
 
 Creates new continuous query named by C<name> on database C<database> using
-query C<query>.
+query C<query>. Optional C<every> and C<for> define the resampling
+times.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
@@ -1209,10 +1851,26 @@ otherwise executes the required C<on_error> code reference.
 sub create_continuous_query {
     my ($self, %args) = @_;
 
-    my $q = 'CREATE CONTINUOUS QUERY '. $args{name}
-        .' ON '. $args{database}
-        .' BEGIN '. $args{query}
-        .' END';
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        my $resample = '';
+        if ( $args{every} || $args{for} ) {
+            $resample = ' RESAMPLE';
+            if ( $args{every} ) {
+                $resample .= ' EVERY '. $args{every};
+            }
+            if ( $args{for} ) {
+                $resample .= ' FOR '. $args{for};
+            }
+        }
+        $q = 'CREATE CONTINUOUS QUERY '. $args{name}
+            .' ON '. $args{database}
+            . $resample
+            .' BEGIN '. $args{query}
+            .' END';
+    }
 
     my $url = $self->_make_url('/query', {
         q => $q
@@ -1235,9 +1893,14 @@ sub create_continuous_query {
 
     $cv = AE::cv;
     $db->drop_continuous_query(
+        # raw query
+        q => 'DROP CONTINUOUS QUERY per5minutes ON mydb',
+
+        # or query created from arguments
         database => 'mydb',
         name => 'per5minutes',
 
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to drop continuous query: @_");
@@ -1255,7 +1918,12 @@ otherwise executes the required C<on_error> code reference.
 sub drop_continuous_query {
     my ($self, %args) = @_;
 
-    my $q = 'DROP CONTINUOUS QUERY '. $args{name} . ' ON '. $args{database};
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'DROP CONTINUOUS QUERY '. $args{name} . ' ON '. $args{database};
+    }
 
     my $url = $self->_make_url('/query', {
         q => $q
@@ -1285,10 +1953,13 @@ sub drop_continuous_query {
             $cv->croak("Failed to list continuous queries: @_");
         }
     );
-    my @continuous_queries = $cv->recv;
-    for my $cq ( @continuous_queries ) {
-        print "Name: $cq->{name}\n";
-        print "Query: $cq->{query}\n";
+    my $continuous_queries = $cv->recv;
+    for my $database ( sort keys %{ $continuous_queries } ) {
+        print "Database: $database\n";
+        for my $s ( @{ $continuous_queries->{$database} } ) {
+            print " Name: $s->{name}\n";
+            print " Query: $s->{query}\n";
+        }
     }
 
 Returns a list of hash references with keys C<name> and C<query> for each
@@ -1313,17 +1984,19 @@ sub show_continuous_queries {
 
             if ( $headers->{Status} eq '200' ) {
                 my $data = decode_json($body);
-                my $res = $data->{results}->[0]->{series}->[0];
-                my $cols = $res->{columns};
-                my $values = $res->{values};
-                my @policies = (
-                    map {
-                        +{
-                            zip(@$cols, @$_)
-                        }
-                    } @{ $values || [] }
-                );
-                $args{on_success}->(@policies);
+                my $cqs = {};
+                for my $res ( @{ $data->{results}->[0]->{series} || [] } ) {
+                    my $cols = $res->{columns};
+                    my $values = $res->{values};
+                    $cqs->{ $res->{name } } = [
+                        map {
+                            +{
+                                zip(@$cols, @$_)
+                            }
+                        } @{ $values || [] }
+                    ];
+                }
+                $args{on_success}->($cqs);
             } else {
                 $args{on_error}->( $body );
             }
@@ -1332,21 +2005,22 @@ sub show_continuous_queries {
 }
 
 
-=head2 Writing Data
+=head2 Managing Data
 
 =head3 write
 
     $cv = AE::cv;
     $db->write(
         database => 'mydb',
-        precision => 'n',
+        precision => 's',
         rp => 'last_day',
+        consistency => 'quorum',
 
         data => [
             # line protocol formatted
-            'cpu_load,host=server02,region=eu-east sensor="top",value=0.64 1437868012260500137',
+            'cpu_load,host=server02,region=eu-east sensor="top",value=0.64 1456097956',
 
-            # or as an hash
+            # or as a hash
             {
                 measurement => 'cpu_load',
                 tags => {
@@ -1355,9 +2029,9 @@ sub show_continuous_queries {
                 },
                 fields => {
                     value => '0.64',
-                    sensor => '"top"',
+                    sensor => q{"top"},
                 },
-                time => time() * 10**9
+                time => time()
             }
         ],
 
@@ -1368,15 +2042,36 @@ sub show_continuous_queries {
     );
     $cv->recv;
 
-Writes to database C<database> and optional retention policy C<rp>,
-time-series data C<data> with optional precision C<precision>. The C<data> can
-be specified as single scalar value or as array reference. In either case the
-scalar variables are expected to be an formatted using line protocol or if hash
-with required keys C<measurement> and C<fields> and optional C<tags> and
-C<time>.
+Writes time-series data C<data> to database C<database> with optional parameters:
+retention policy C<rp>, time precision C<precision> and consistency C<consistency>.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
+
+The C<data> can be specified as single scalar value or hash reference with
+required keys C<measurement> and C<fields> and optional C<tags> and C<time>.
+Both can be also mixed and matched within an array reference.
+
+Scalar values are expected to be formatted using InfluxDB line protocol.
+
+All special characters need to be escaped. In that case you might want to use
+L<InfluxDB::LineProtocol>:
+
+    use InfluxDB::LineProtocol qw(dataline);
+
+    ...
+    $db->write(
+        database => 'mydb',
+
+        data => [
+            dataline('CPU Load', 0.64, { "Region of the World" => "Eastern Europe", codename => "eu-east" }, 1437868012260500137)
+
+            # which translates to
+            'CPU\ Load,Region\ of\ the\ World=Eastern\ Europe,codename=eu-east value=0.64 1437868012260500137',
+        ],
+        ...
+    );
+
 
 =cut
 
@@ -1441,6 +2136,12 @@ sub write {
                 ( precision => $args{precision} )
                 :
                 ()
+        ),
+        (
+            $args{one} ?
+                ( one => $args{one} )
+                :
+                ()
         )
     });
 
@@ -1464,17 +2165,34 @@ sub write {
     $cv = AE::cv;
     $db->select(
         database => 'mydb',
+
+        # return time in Unix epoch format
+        epoch => "s",
+
+        # raw query
+        q => "SELECT count(value) FROM cpu_load"
+            ." WHERE region = 'eu-east' AND time > now() - 14d"
+            ." GROUP BY time(1d) fill(none)"
+            ." ORDER BY time DESC"
+            ." LIMIT 10 OFFSET 3",
+
+        # or query created from arguments
+        fields => 'count(value)',
         measurement => 'cpu_load',
-        fields => 'host, count(value)',
-        where => "region = 'eu-east' AND time > now() - 7d",
+        where => "region = 'eu-east' AND time > now() - 14d",
 
-        group_by => 'time(5m), host',
-        fill => 'previous',
+        group_by => 'time(1d)',
+        fill => 'none',
 
-        order_by => 'ASC',
+        order_by => 'time DESC',
 
         limit => 10,
+        offset => 3,
 
+        # downsample result to another database, retention policy and measurement
+        into => 'otherdb."default".cpu_load_per5m',
+
+        # callbacks
         on_success => $cv,
         on_error => sub {
             $cv->croak("Failed to select data: @_");
@@ -1483,8 +2201,6 @@ sub write {
     my $results = $cv->recv;
     for my $row ( @{ $results } ) {
         print "Measurement: $row->{name}\n";
-        print "Tags:\n";
-        print " * $_ = $row->{tags}->{$_}\n" for keys %{ $row->{tags} || {} };
         print "Values:\n";
         for my $value ( @{ $row->{values} || [] } ) {
             print " * $_ = $value->{$_}\n" for keys %{ $value || {} };
@@ -1494,7 +2210,12 @@ sub write {
 Executes an select query on database C<database> created from provided arguments
 measurement C<measurement>, fields to select C<fields>, optional C<where>
 clause, grouped by C<group_by> and empty values filled with C<fill>, ordered by
-C<order_by> and number of results limited to C<limit>.
+C<order_by> and number of results limited to C<limit> with offset C<offset>.
+To limit number of returned series use C<slimit> with offset C<soffset>.
+If C<into> parameter is provided the result of the query will be copied to specified
+measurement.
+If C<epoch> is provided the returned C<time> value will in Unix epoch format.
+Optional C<chunk_size> can be provided to override the default value of 10,000 datapoints.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
@@ -1504,37 +2225,48 @@ otherwise executes the required C<on_error> code reference.
 sub select {
     my ($self, %args) = @_;
 
-    my $q = 'SELECT '. $args{fields} .' FROM '. $args{measurement};
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'SELECT '. $args{fields};
 
-    if ( my $cond = $args{where} ) {
-        $q .= ' WHERE '. $cond;
-    }
-
-    if ( my $group = $args{group_by} ) {
-        $q .= ' GROUP BY '. $group;
-
-        if ( my $fill = $args{fill} ) {
-            $q .= ' fill('. $fill .')';
+        if ( my $into = $args{into} ) {
+            $q .= ' INTO '. $into;
         }
-    }
 
-    if ( my $order_by = $args{order_by} ) {
-        $q .= ' ORDER BY '. $order_by;
-    }
+        $q .= ' FROM '. $args{measurement};
 
-    if ( my $limit = $args{limit} ) {
-        $q .= ' LIMIT '. $limit;
-
-        if ( my $offset = $args{offset} ) {
-            $q .= ' OFFSET '. $offset;
+        if ( my $cond = $args{where} ) {
+            $q .= ' WHERE '. $cond;
         }
-    }
 
-    if ( my $slimit = $args{slimit} ) {
-        $q .= ' SLIMIT '. $slimit;
+        if ( my $group = $args{group_by} ) {
+            $q .= ' GROUP BY '. $group;
 
-        if ( my $soffset = $args{soffset} ) {
-            $q .= ' SOFFSET '. $soffset;
+            if ( my $fill = $args{fill} ) {
+                $q .= ' fill('. $fill .')';
+            }
+        }
+
+        if ( my $order_by = $args{order_by} ) {
+            $q .= ' ORDER BY '. $order_by;
+        }
+
+        if ( my $limit = $args{limit} ) {
+            $q .= ' LIMIT '. $limit;
+
+            if ( my $offset = $args{offset} ) {
+                $q .= ' OFFSET '. $offset;
+            }
+        }
+
+        if ( my $slimit = $args{slimit} ) {
+            $q .= ' SLIMIT '. $slimit;
+
+            if ( my $soffset = $args{soffset} ) {
+                $q .= ' SOFFSET '. $soffset;
+            }
         }
     }
 
@@ -1544,6 +2276,18 @@ sub select {
         (
             $args{rp} ?
                 ( rp => $args{rp} )
+                :
+                ()
+        ),
+        (
+            $args{epoch} ?
+                ( epoch => $args{epoch} )
+                :
+                ()
+        ),
+        (
+            $args{chunk_size} ?
+                ( chunk_size => $args{chunk_size} )
                 :
                 ()
         ),
@@ -1564,7 +2308,6 @@ sub select {
 
                         +{
                             name => $res->{name},
-                            tags => $res->{tags},
                             values => [
                                 map {
                                     +{
@@ -1616,10 +2359,202 @@ sub query {
     );
 }
 
+=head2 Kapacitor integration
+
+Subscriptions tell InfluxDB to send all the data it receives to Kapacitor.
+
+=head3 create_subscription
+
+    $cv = AE::cv;
+    $db->create_subscription(
+        # raw query
+        q => 'CREATE SUBSCRIPTION "alldata" ON "mydb"."default"'
+            ." DESTINATIONS ANY 'udp://h1.example.com:9090', 'udp://h2.example.com:9090'",
+
+        # or query created from arguments
+        name => q{"alldata"},
+        database => q{"mydb"},
+        rp => q{"default"},
+        mode => "ANY",
+        destinations => [
+            q{'udp://h1.example.com:9090'},
+            q{'udp://h2.example.com:9090'}
+        ],
+        # callbacks
+        on_success => $cv,
+        on_error => sub {
+            $cv->croak("Failed to create subscription: @_");
+        }
+    );
+    $cv->recv;
+
+Creates a new subscription C<name> on database C<database> with retention policy
+C<rp> with mode C<mode> to destinations provided as C<destinations>. The
+C<destinations> could be either a single scalar value or array reference to a
+list of host.
+
+The required C<on_success> code reference is executed if request was successful,
+otherwise executes the required C<on_error> code reference.
+
+=cut
+
+sub create_subscription {
+    my ($self, %args) = @_;
+
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'CREATE SUBSCRIPTION '. $args{name} .' ON '
+            . $args{database} .'.'. $args{rp}
+            . ' DESTINATIONS '. $args{mode} .' '
+            . (
+                ref $args{destinations} eq 'ARRAY' ?
+                    join(", ", @{ $args{destinations} || [] } )
+                    :
+                    $args{destinations}
+            );
+    }
+
+    my $url = $self->_make_url('/query', {
+        q => $q,
+    });
+
+    $self->_http_request( GET => $url->as_string,
+        sub {
+            my ($body, $headers) = @_;
+
+            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+                $args{on_success}->();
+            } else {
+                $args{on_error}->( $body );
+            }
+        }
+    );
+}
+
+=head3 show_subscriptions
+
+    $cv = AE::cv;
+    $db->show_subscriptions(
+        on_success => $cv,
+        on_error => sub {
+            $cv->croak("Failed to list shards: @_");
+        }
+    );
+    my $subscriptions = $cv->recv;
+    for my $database ( sort keys %{ $subscriptions } ) {
+        print "Database: $database\n";
+        for my $s ( @{ $subscriptions->{$database} } ) {
+            print " Name: $s->{name}\n";
+            print " Retention Policy: $s->{retention_policy}\n";
+            print " Mode: $s->{mode}\n";
+            print " Destinations:\n";
+            print "  * $_\n" for @{ $s->{destinations} || [] };
+        }
+    }
+
+Returns a hash reference with database name as keys and their shards as values.
+
+The required C<on_success> code reference is executed if request was successful,
+otherwise executes the required C<on_error> code reference.
+
+=cut
+
+sub show_subscriptions {
+    my ($self, %args) = @_;
+
+    my $url = $self->_make_url('/query', {
+        q => 'SHOW SUBSCRIPTIONS'
+    });
+
+    $self->_http_request( GET => $url->as_string,
+        sub {
+            my ($body, $headers) = @_;
+
+            if ( $headers->{Status} eq '200' ) {
+                my $data = decode_json($body);
+                my $subscriptions = {};
+                for my $res ( @{ $data->{results}->[0]->{series} || [] } ) {
+                    my $cols = $res->{columns};
+                    my $values = $res->{values};
+                    $subscriptions->{ $res->{name } } = [
+                        map {
+                            +{
+                                zip(@$cols, @$_)
+                            }
+                        } @{ $values || [] }
+                    ];
+                }
+                $args{on_success}->($subscriptions);
+            } else {
+                $args{on_error}->( $body );
+            }
+        }
+    );
+}
+
+=head3 drop_subscription
+
+    $cv = AE::cv;
+    $db->drop_subscription(
+        # raw query
+        q => 'DROP SUBSCRIPTION "alldata" ON "mydb"."default"',
+
+        # or query created from arguments
+        name => q{"alldata"},
+        database => q{"mydb"},
+        rp => q{"default"},
+
+        # callbacks
+        on_success => $cv,
+        on_error => sub {
+            $cv->croak("Failed to drop subscription: @_");
+        }
+    );
+    $cv->recv;
+
+Drops subscription C<name> on database C<database> with retention policy
+C<rp>.
+
+The required C<on_success> code reference is executed if request was successful,
+otherwise executes the required C<on_error> code reference.
+
+=cut
+
+sub drop_subscription {
+    my ($self, %args) = @_;
+
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+    } else {
+        $q = 'DROP SUBSCRIPTION '. $args{name} .' ON '
+            . $args{database} .'.'. $args{rp};
+    }
+
+    my $url = $self->_make_url('/query', {
+        q => $q,
+    });
+
+    $self->_http_request( GET => $url->as_string,
+        sub {
+            my ($body, $headers) = @_;
+
+            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+                $args{on_success}->();
+            } else {
+                $args{on_error}->( $body );
+            }
+        }
+    );
+}
+
+
 =head1 CAVEATS
 
 Following the optimistic nature of InfluxDB this modules does not validate any
-parameters. Also quoting and escaping special characters is to be done by the
+arguments. Also quoting and escaping special characters is to be done by the
 user of this library.
 
 =cut
