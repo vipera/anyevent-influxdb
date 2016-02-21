@@ -257,9 +257,6 @@ sub ping {
     $self->_http_request( GET => $url->as_string,
         sub {
             my ($body, $headers) = @_;
-            use DDP;
-            p($headers);
-
             if ( $headers->{Status} eq '204' ) {
                 $args{on_success}->( $headers->{'x-influxdb-version'} );
             } else {
