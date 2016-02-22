@@ -24,7 +24,7 @@ my @measurements = qw(cpu_load mem_free cpu_temp disk_free);
 my @regions = qw(us-east us-west eu-east eu-east);
 my @hosts = map { sprintf('server%02d', $_) } 1 .. 10;
 my @fields = map { sprintf('field%02d', $_) } 1 .. 10;
-my $now_14d = time() - int(14 * 24 * 3600);
+my $_15days_ago = time() - int(15 * 24 * 3600);
 
 # common patterns
 my $dt_re = re('^\d{4}\-\d{2}\-\d{2}T\d{2}:\d{2}:\d{2}Z$');
@@ -618,7 +618,7 @@ my $cv;
                 values => array_each(
                         {
                             count => $pos_int,
-                            time => code(sub { $_[0] >= $now_14d }),
+                            time => code(sub { $_[0] >= $_15days_ago }),
                         }
                 )
             }
