@@ -2059,6 +2059,7 @@ L<InfluxDB::LineProtocol>:
     ...
     $db->write(
         database => 'mydb',
+        precision => 'n',
 
         data => [
             dataline('CPU Load', 0.64, { "Region of the World" => "Eastern Europe", codename => "eu-east" }, 1437868012260500137)
