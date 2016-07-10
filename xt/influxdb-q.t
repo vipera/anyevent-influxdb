@@ -25,6 +25,7 @@ my @regions = qw(us-east us-west eu-east eu-east);
 my @hosts = map { sprintf('server%02d', $_) } 1 .. 10;
 my @fields = map { sprintf('field%02d', $_) } 1 .. 10;
 my $_15days_ago = time() - int(15 * 24 * 3600);
+my $existing_region;
 
 # common patterns
 my $dt_re = re('^\d{4}\-\d{2}\-\d{2}T\d{2}:\d{2}:\d{2}Z$');
@@ -46,11 +47,11 @@ my $cv;
      $version = $cv->recv;
     };
     if ( $version ) {
-        plan tests => 58;
+        plan tests => 62;
         ok(1, "Connected to InfluxDB server version $version at: ". $db->server);
     } else {
         plan skip_all => 'InfluxDB server not found at: '. $db->server;
-    } 
+    }
 }
 {
     note "=== create_database ===";
@@ -105,7 +106,7 @@ my $cv;
     note "=== create_retention_policy ===";
     $cv = AE::cv;
     $db->create_retention_policy(
-        q => "CREATE RETENTION POLICY last_day ON mydb DURATION 1d REPLICATION 1",
+        q => "CREATE RETENTION POLICY last_day ON mydb DURATION 1d REPLICATION 1 SHARD DURATION 12h",
 
         on_success => sub { $cv->send("test ok") },
         on_error => sub {
@@ -142,8 +143,8 @@ my $cv;
     is_deeply(
         [ @retention_policies ],
         [
-            { name => "default", duration => 0, replicaN => 1, default => $true }, 
-            { name => "last_day", duration => "48h0m0s", replicaN => 1, default => $false }, 
+            { name => "default", duration => 0, shardGroupDuration => '168h0m0s', replicaN => 1, default => $true },
+            { name => "last_day", duration => "48h0m0s", shardGroupDuration => '24h0m0s', replicaN => 1, default => $false },
         ],
         "Retention policies listed"
     );
@@ -198,7 +199,7 @@ my $cv;
     );
     note "show_continuous_queries";
     my $continuous_queries = $cv->recv;
-    is_deeply( $continuous_queries, 
+    is_deeply( $continuous_queries,
         {
             _internal => [],
             foo => [],
@@ -379,25 +380,11 @@ my $cv;
     }
 }
 {
-    note "=== drop_user ===";
-
-    $cv = AE::cv;
-    $db->drop_user(
-        q => "DROP USER jdoe",
-
-        on_success => sub { $cv->send("test ok") },
-        on_error => sub {
-            $cv->croak("Failed to drop user: @_");
-        }
-    );
-    ok($cv->recv, "user dropped");
-}
-{
     note "=== write ===";
 
     $cv = AE::cv;
     for my $rno ( map { "request no. $_" } 1 .. 15 ) {
-        $cv->begin; 
+        $cv->begin;
         note "preparing $rno...";
 
         $db->write(
@@ -451,29 +438,15 @@ my $cv;
             $cv->croak("Failed to list series: @_");
         }
     );
-    my $series = $cv->recv;
-    cmp_deeply($series,
-        all(
-            hashkeys(@measurements) => hash_each(
-                array_each(
-                    {
-                        _key => re('^('.join('|', @measurements).'),host=server\d{2},region=('.join('|', @regions).')'),
-                        host => re('^server\d{2}$'),
-                        region => re('^('.join('|', @regions).')$'),
-                    }
-                ),
-            ),
+    my @series = $cv->recv;
+    cmp_deeply(
+        [ @series ],
+        array_each(
+            re('^('.join('|', @measurements).'),host=server\d{2},region=('.join('|', @regions).')'),
         ),
         "all series as expected"
     );
-
-    for my $measurement ( sort keys %{ $series } ) {
-        note "Measurement: $measurement";
-        for my $s ( @{ $series->{$measurement} } ) {
-            note " * $_: $s->{$_}" for sort keys %{ $s };
-        }
-        note "----------";
-    }
+    note "$_" for @series;
 }
 {
     note "=== show_series ===";
@@ -489,28 +462,15 @@ my $cv;
             $cv->croak("Failed to list series: @_");
         }
     );
-    my $series = $cv->recv;
-    cmp_deeply($series,
-        all(
-            hashkeys('cpu_load') => hash_each(
-                array_each(
-                    {
-                        _key => re('^cpu_load,host=server\d{2},region=('.join('|', @regions).')'),
-                        host => re('^server\d{2}$'),
-                        region => re('^('.join('|', @regions).')$'),
-                    }
-                ),
-            ),
+    my @series = $cv->recv;
+    cmp_deeply(
+        [ @series ],
+        array_each(
+            re('^cpu_load,host=server\d{2},region=('.join('|', @regions).')'),
         ),
         "cpu_load series as expected"
     );
-    for my $measurement ( sort keys %{ $series } ) {
-        note "Measurement: $measurement";
-        for my $s ( @{ $series->{$measurement} } ) {
-            note " * $_: $s->{$_}" for sort keys %{ $s };
-        }
-    }
-
+    note "$_" for @series;
 }
 {
     note "=== show_tag_keys ===";
@@ -546,6 +506,33 @@ my $cv;
     $db->show_tag_values(
         database => 'mydb',
 
+        q => q{SHOW TAG VALUES WITH KEY = "host"},
+
+        on_success => $cv,
+        on_error => sub {
+            $cv->croak("Failed to list tag values: @_");
+        }
+    );
+    my $tag_values = $cv->recv;
+    cmp_deeply($tag_values,
+        hashkeys(@measurements) => hashkeys('host') => array_each(any(@hosts)),
+        "tag values"
+    );
+    for my $measurement ( sort keys %{ $tag_values } ) {
+        note "Measurement: $measurement";
+        for my $tag_key ( sort keys %{ $tag_values->{$measurement} } ) {
+            note "  Tag key: $tag_key";
+            note "   * $_" for @{ $tag_values->{$measurement}->{$tag_key} };
+        }
+    }
+}
+{
+    note "=== show_tag_values ===";
+
+    $cv = AE::cv;
+    $db->show_tag_values(
+        database => 'mydb',
+
         q => "SHOW TAG VALUES FROM cpu_load WITH KEY IN (host, region)",
 
         on_success => $cv,
@@ -554,15 +541,16 @@ my $cv;
         }
     );
     my $tag_values = $cv->recv;
-    cmp_deeply($tag_values, {
-            host => array_each(any(@hosts)),
-            region => array_each(any(@regions)),
-        },
+    cmp_deeply($tag_values,
+        hashkeys('cpu_load') => hashkeys(qw(host region)) => array_each(any(@hosts)),
         "tag values"
     );
-    for my $tag_key ( sort keys %{ $tag_values } ) {
-        note "Tag key: $tag_key";
-        note " * $_" for @{ $tag_values->{$tag_key} };
+    for my $measurement ( sort keys %{ $tag_values } ) {
+        note "Measurement: $measurement";
+        for my $tag_key ( sort keys %{ $tag_values->{$measurement} } ) {
+            note "  Tag key: $tag_key";
+            note "   * $_" for @{ $tag_values->{$measurement}->{$tag_key} };
+        }
     }
 }
 {
@@ -649,7 +637,7 @@ my $cv;
         [ @shard_groups ],
         array_each(
             {
-                id => $pos_int, 
+                id => $pos_int,
                 database => any(qw(_internal mydb)),
                 retention_policy => any(qw(monitor default)),
                 start_time => $dt_re,
@@ -669,6 +657,37 @@ my $cv;
     }
 }
 {
+    note "=== show_queries ===";
+
+    $cv = AE::cv;
+    $db->show_queries(
+        on_success => $cv,
+        on_error => sub {
+            $cv->croak("Failed to list tag keys: @_");
+        }
+    );
+    my @queries = $cv->recv;
+    cmp_deeply(
+        [ @queries ],
+        array_each(
+            {
+                qid => $pos_int,
+                query => 'SHOW QUERIES',
+                database => ignore(),
+                duration => re('\d+'),
+            }
+        ),
+        "queries as expected"
+    );
+
+    for my $q ( @queries ) {
+        note "ID: $q->{qid}\n";
+        note "Query: $q->{query}\n";
+        note "Database: $q->{database}\n";
+        note "Duration: $q->{duration}\n";
+    }
+}
+{
     note "=== show_shards ===";
 
     $cv = AE::cv;
@@ -685,26 +704,26 @@ my $cv;
             foo => [],
             _internal => array_each(
                     {
-                        id => $pos_int, 
+                        id => $pos_int,
                         database => '_internal',
                         retention_policy => 'monitor',
-                        shard_group => $pos_int, 
+                        shard_group => $pos_int,
                         start_time => $dt_re,
                         end_time => $dt_re,
                         expiry_time => $dt_re,
-                        owners => 1,
+                        owners => ignore(), # used to be 1 in 0.10, now is empty in 0.13 - a bug?
                     }
                 ),
             mydb => array_each(
                     {
-                        id => $pos_int, 
+                        id => $pos_int,
                         database => 'mydb',
                         retention_policy => 'default',
-                        shard_group => $pos_int, 
+                        shard_group => $pos_int,
                         start_time => $dt_re,
                         end_time => $dt_re,
                         expiry_time => $dt_re,
-                        owners => 1,
+                        owners => ignore(), # used to be 1 in 0.10, now is empty in 0.13 - a bug?
                     }
                 ),
         },
@@ -722,7 +741,7 @@ my $cv;
 
     $cv = AE::cv;
     $db->create_subscription(
-        q => 'CREATE SUBSCRIPTION "alldata" ON "mydb"."default"'
+        q => 'CREATE SUBSCRIPTION alldata ON "mydb"."default"'
             ." DESTINATIONS ANY 'udp://h1.example.com:9090', 'udp://h2.example.com:9090'",
 
         on_success => sub { $cv->send("test ok") },
@@ -930,6 +949,20 @@ my $cv;
     ok($cv->recv, "cpu_load dropped ");
 }
 {
+    note "=== drop_user ===";
+
+    $cv = AE::cv;
+    $db->drop_user(
+        q => "DROP USER jdoe",
+
+        on_success => sub { $cv->send("test ok") },
+        on_error => sub {
+            $cv->croak("Failed to drop user: @_");
+        }
+    );
+    ok($cv->recv, "user dropped");
+}
+{
     note "=== show_measurements ===";
 
     $cv = AE::cv;
@@ -983,28 +1016,56 @@ my $cv;
     );
     my $series = $cv->recv;
     my @sub_measurements = grep { ! /^cpu_/ } @measurements;
-    cmp_deeply($series,
-        all(
-            hashkeys(@sub_measurements) => hash_each(
-                array_each(
-                    {
-                        _key => re('^('.join('|', @sub_measurements).'),host=server\d{2},region=('.join('|', @regions).')'),
-                        host => re('^server\d{2}$'),
-                        region => re('^('.join('|', @regions).')$'),
-                    }
-                ),
-            ),
+    my @series = $cv->recv;
+    cmp_deeply(
+        [ @series ],
+        array_each(
+            re('^('.join('|', @sub_measurements).'),host=server\d{2},region=('.join('|', @regions).')'),
         ),
         "all series as expected"
     );
+    ($existing_region) = $series[0] =~ /region=(.*)$/;
+    note "$_" for @series;
+}
+{
+    note "=== delete_series ===";
 
-    for my $measurement ( sort keys %{ $series } ) {
-        note "Measurement: $measurement";
-        for my $s ( @{ $series->{$measurement} } ) {
-            note " * $_: $s->{$_}" for sort keys %{ $s };
+    $cv = AE::cv;
+    $db->delete_series(
+        database => 'mydb',
+
+        q => qq{DELETE FROM disk_free WHERE region='$existing_region'},
+
+        on_success => sub { $cv->send("test ok") },
+        on_error => sub {
+            $cv->croak("Failed to delete series: @_");
         }
-        note "----------";
-    }
+    );
+    ok($cv->recv, "disk_free series from region $existing_region deleted");
+}
+{
+    note "=== show_series ===";
+
+    $cv = AE::cv;
+    $db->show_series(
+        database => 'mydb',
+        q => "SHOW SERIES FROM disk_free",
+
+        on_success => $cv,
+        on_error => sub {
+            $cv->croak("Failed to list series: @_");
+        }
+    );
+    my @sub_measurements = grep { ! /^cpu_/ } @measurements;
+    my @series = $cv->recv;
+    cmp_deeply(
+        [ @series ],
+        array_each(
+            re('^disk_free,host=server\d{2},region=('.join('|', grep { ! /$existing_region/ } @regions).')'),
+        ),
+        "all series as expected"
+    );
+    note "$_" for @series;
 }
 {
     for my $d ( qw( mydb foo ) ) {
