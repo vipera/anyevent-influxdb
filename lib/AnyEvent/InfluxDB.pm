@@ -1421,6 +1421,14 @@ sub show_tag_keys {
         if ( my $cond = $args{where} ) {
             $q .= ' WHERE '. $cond;
         }
+
+        if ( my $limit = $args{limit} ) {
+            $q .= ' LIMIT '. $limit;
+        }
+
+        if ( my $offset = $args{offset} ) {
+            $q .= ' OFFSET '. $offset;
+        }
     }
 
     my $url = $self->_make_url('/query', {
@@ -1468,6 +1476,9 @@ sub show_tag_keys {
         # or a list of keys
         keys => [qw( "host" "region" )],
 
+        limit => 10,
+        offset => 3,
+
         # callbacks
         on_success => $cv,
         on_error => sub {
@@ -1482,7 +1493,8 @@ sub show_tag_keys {
 
 Returns from database C<database> and optional measurement C<measurement>,
 values from a single tag key C<key> or a list of tag keys C<keys>, a hash
-reference with tag keys as keys and their unique tag values as values.
+reference with tag keys as keys and their unique tag values as values and number
+of results limited to C<limit> with offset C<offset>.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
@@ -1511,6 +1523,14 @@ sub show_tag_values {
 
         if ( my $cond = $args{where} ) {
             $q .= ' WHERE '. $cond;
+        }
+
+        if ( my $limit = $args{limit} ) {
+            $q .= ' LIMIT '. $limit;
+        }
+
+        if ( my $offset = $args{offset} ) {
+            $q .= ' OFFSET '. $offset;
         }
     }
 
