@@ -1,6 +1,8 @@
 Revision history for Perl extension AnyEvent::InfluxDB.
 
 {{$NEXT}}
+
+0.13   2016-08-10 22:47:37
     Added full support for InfluxDB v.13
 
 0.02   2016-02-22 00:10:12
