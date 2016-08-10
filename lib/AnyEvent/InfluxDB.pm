@@ -674,10 +674,8 @@ sub show_shards {
         print "Expiry Time: $sg->{expiry_time}\n";
     }
 
-Returns a list of hash references with keys C<name>, C<duration>, C<replicaN>
-and C<default> for each replication policy defined on database C<database>.
-
-Returns a hash reference with database name as keys and their shards as values.
+Returns a list of hash references with keys C<id>, C<database>, C<retention_policy>,
+C<start_time>, C<end_time> and C<expiry_time> for each shard groups.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
