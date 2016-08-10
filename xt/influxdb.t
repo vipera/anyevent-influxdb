@@ -162,6 +162,7 @@ my $cv;
     for my $rp ( @retention_policies ) {
         note "Name: $rp->{name}";
         note "Duration: $rp->{duration}";
+        note "Shard group duration: $rp->{shardGroupDuration}";
         note "Replication factor: $rp->{replicaN}";
         note "Default?: $rp->{default}";
     }

@@ -103,7 +103,7 @@ has '_server_uri' => (
 
 Asynchronous client library for InfluxDB time-series database L<https://influxdb.com>.
 
-This version is meant to be used with InfluxDB v0.10 and newer.
+This version is meant to be used with InfluxDB v0.13 or newer.
 
 =head1 METHODS
 
@@ -115,7 +115,7 @@ This version is meant to be used with InfluxDB v0.10 and newer.
         password => 'password',
     );
 
-Returns object representing given server C<server> connected using optionally
+Returns object representing given InfluDB C<server> connected using optionally
 provided username C<username> and password C<password>.
 
 Default value of C<server> is C<http://localhost:8086>.
@@ -244,7 +244,7 @@ sub _http_request {
     );
     my $version = $cv->recv;
 
-Check the leader of the cluster to ensure that the leader is available and ready.
+Checks the leader of the cluster to ensure that the leader is available and ready.
 The optional parameter C<wait_for_leader> specifies the number of seconds to wait
 before returning a response.
 
@@ -306,7 +306,7 @@ sub ping {
     );
     $cv->recv;
 
-Creates specified by C<database> argument database.
+Creates database specified by C<database> argument.
 
 If one of retention policy parameters is specified then the database will be
 created with that retention policy as default - see L</"Retention Policy Management">
@@ -367,7 +367,7 @@ sub create_database {
     );
     $cv->recv;
 
-Drops specified by C<database> argument database.  The optional parameter
+Drops database specified by C<database> argument. The optional parameter
 C<if_exists> if set to true value, allows to avoid error if the database
 does not exists.
 
@@ -499,7 +499,7 @@ sub drop_series {
     );
     $cv->recv;
 
-Delete all points from a measurement C<measurement>
+Deletes all points from a measurement C<measurement>
 and/or filtered by C<where> clause from database C<database>.
 
 The required C<on_success> code reference is executed if request was successful,
@@ -840,7 +840,7 @@ sub show_queries {
     );
     $cv->recv;
 
-Stop a running query identified by id number C<id>.
+Stops a running query identified by id number C<id>.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
@@ -1129,12 +1129,14 @@ sub show_databases {
     for my $rp ( @retention_policies ) {
         print "Name: $rp->{name}\n";
         print "Duration: $rp->{duration}\n";
+        print "Shard group duration: $rp->{shardGroupDuration}\n";
         print "Replication factor: $rp->{replicaN}\n";
         print "Default?: $rp->{default}\n";
     }
 
-Returns a list of hash references with keys C<name>, C<duration>, C<replicaN>
-and C<default> for each replication policy defined on database C<database>.
+Returns a list of hash references with keys C<name>, C<duration>,
+C<shardGroupDuration>, C<replicaN> and C<default> for each replication policy
+defined on database C<database>.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
@@ -1397,7 +1399,7 @@ sub show_measurements {
 
 Returns a hash reference with measurements as keys and their unique tag keys
 as values from database C<database> and optional measurement C<measurement>,
-optionally filtered by the C<where> clause, grouped by C<group_by> and number
+optionally filtered by the C<where> clause, grouped by C<group_by> with number
 of results limited to C<limit> with offset C<offset>.
 
 The required C<on_success> code reference is executed if request was successful,
@@ -1488,12 +1490,15 @@ sub show_tag_keys {
     my $tag_values = $cv->recv;
     for my $measurement ( sort keys %{ $tag_values } ) {
         print "Measurement: $measurement\n";
-        print " * $_\n" for @{ $tag_values->{$measurement} };
+        for my $tag_key ( sort keys %{ $tag_values->{$measurement} } ) {
+            print "  Tag key: $tag_key\n";
+            print "   * $_\n" for @{ $tag_values->{$measurement}->{$tag_key} };
+        }
     }
 
-Returns from database C<database> and optional measurement C<measurement>,
-values from a single tag key C<key> or a list of tag keys C<keys>, a hash
-reference with tag keys as keys and their unique tag values as values and number
+Returns a hash reference with measurements as keys and their unique tag values
+as values from database C<database> and optional measurement C<measurement>
+from a single tag key C<key> or a list of tag keys C<keys> with number
 of results limited to C<limit> with offset C<offset>.
 
 The required C<on_success> code reference is executed if request was successful,
@@ -1590,8 +1595,8 @@ sub show_tag_values {
         print " * $_\n" for @{ $field_keys->{$measurement} };
     }
 
-Returns field keys from all measurements from database C<database>. Single
-measurement can be specified with optional C<measurement> parameter.
+Returns a hash reference with measurements as keys and their field keys
+as values from database C<database> and optional measurement C<measurement>.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
@@ -2470,7 +2475,7 @@ sub write {
 Executes an select query on database C<database> created from provided arguments
 measurement C<measurement>, fields to select C<fields>, optional C<where>
 clause, grouped by C<group_by> and empty values filled with C<fill>, ordered by
-C<order_by> and number of results limited to C<limit> with offset C<offset>.
+C<order_by> with number of results limited to C<limit> with offset C<offset>.
 To limit number of returned series use C<slimit> with offset C<soffset>.
 If C<into> parameter is provided the result of the query will be copied to specified
 measurement.
@@ -2595,6 +2600,7 @@ sub select {
 
     $cv = AE::cv;
     $db->query(
+        method => 'GET',
         query => {
             db => 'mydb',
             q => 'SELECT * FROM cpu_load',
@@ -2617,7 +2623,9 @@ sub query {
     $url->path('/query');
     $url->query_form_hash( $args{query} );
 
-    $self->_http_request( GET => $url,
+    my $method = $args{method} || 'GET';
+
+    $self->_http_request( $method => $url,
         sub {
             $args{on_response}->(@_);
         }

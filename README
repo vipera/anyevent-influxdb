@@ -3,7 +3,7 @@ NAME
     database
 
 VERSION
-    version 0.02
+    version 0.13
 
 SYNOPSIS
         use EV;
@@ -73,7 +73,7 @@ DESCRIPTION
     Asynchronous client library for InfluxDB time-series database
     <https://influxdb.com>.
 
-    This version is meant to be used with InfluxDB v0.10 and newer.
+    This version is meant to be used with InfluxDB v0.13 or newer.
 
 METHODS
   new
@@ -83,7 +83,7 @@ METHODS
             password => 'password',
         );
 
-    Returns object representing given server "server" connected using
+    Returns object representing given InfluDB "server" connected using
     optionally provided username "username" and password "password".
 
     Default value of "server" is "http://localhost:8086".
@@ -127,7 +127,7 @@ METHODS
         );
         my $version = $cv->recv;
 
-    Check the leader of the cluster to ensure that the leader is available
+    Checks the leader of the cluster to ensure that the leader is available
     and ready. The optional parameter "wait_for_leader" specifies the number
     of seconds to wait before returning a response.
 
@@ -141,11 +141,16 @@ METHODS
         $cv = AE::cv;
         $db->create_database(
             # raw query
-            q => "CREATE DATABASE IF NOT EXISTS mydb",
+            q => "CREATE DATABASE mydb WITH DURATION 7d REPLICATION 3 SHARD DURATION 30m NAME oneweek",
 
             # or query created from arguments
             database => "mydb",
-            if_not_exists => 1,
+
+            # retention policy parameters
+            duration => '7d',
+            shard_duration => '30m',
+            replication => 3,
+            name => 'oneweek',
 
             # callbacks
             on_success => $cv,
@@ -155,9 +160,11 @@ METHODS
         );
         $cv->recv;
 
-    Creates specified by "database" argument database. The optional
-    parameter "if_not_exists" if set to true value, allows to avoid error if
-    the database already exists.
+    Creates database specified by "database" argument.
+
+    If one of retention policy parameters is specified then the database
+    will be created with that retention policy as default - see "Retention
+    Policy Management" for more details.
 
     The required "on_success" code reference is executed if request was
     successful, otherwise executes the required "on_error" code reference.
@@ -180,25 +187,89 @@ METHODS
         );
         $cv->recv;
 
-    Drops specified by "database" argument database. The optional parameter
+    Drops database specified by "database" argument. The optional parameter
     "if_exists" if set to true value, allows to avoid error if the database
     does not exists.
 
     The required "on_success" code reference is executed if request was
     successful, otherwise executes the required "on_error" code reference.
 
-   show_databases
+   drop_series
         $cv = AE::cv;
-        $db->show_databases(
+        $db->drop_series(
+            database => 'mydb',
+
+            # raw query
+            q => "DROP SERIES FROM cpu_load WHERE host = 'server02'",
+
+            # or query created from arguments
+            measurement => 'cpu_load',
+            where => q{host = 'server02'},
+
+            # multiple measurements can also be specified
+            measurements => [qw( cpu_load cpu_temp )],
+
+            # callbacks
             on_success => $cv,
             on_error => sub {
-                $cv->croak("Failed to list databases: @_");
+                $cv->croak("Failed to drop measurement: @_");
             }
         );
-        my @db_names = $cv->recv;
-        print "$_\n" for @db_names;
+        $cv->recv;
 
-    Returns list of known database names.
+    Drops series from single measurement "measurement" (or many using
+    "measurements") and/or filtered by "where" clause from database
+    "database".
+
+    The required "on_success" code reference is executed if request was
+    successful, otherwise executes the required "on_error" code reference.
+
+   delete_series
+        $cv = AE::cv;
+        $db->delete_series(
+            database => 'mydb',
+
+            # raw query
+            q => "DELETE FROM cpu_load WHERE host = 'server02' AND time < '2016-01-01'",
+
+            # or query created from arguments
+            measurement => 'cpu_load',
+            where => q{host = 'server02' AND time < '2016-01-01'},
+
+            # callbacks
+            on_success => $cv,
+            on_error => sub {
+                $cv->croak("Failed to drop measurement: @_");
+            }
+        );
+        $cv->recv;
+
+    Deletes all points from a measurement "measurement" and/or filtered by
+    "where" clause from database "database".
+
+    The required "on_success" code reference is executed if request was
+    successful, otherwise executes the required "on_error" code reference.
+
+   drop_measurement
+        $cv = AE::cv;
+        $db->drop_measurement(
+            database => 'mydb',
+
+            # raw query
+            q => "DROP MEASUREMENT cpu_load",
+
+            # or query created from arguments
+            measurement => 'cpu_load',
+
+            # callbacks
+            on_success => $cv,
+            on_error => sub {
+                $cv->croak("Failed to drop measurement: @_");
+            }
+        );
+        $cv->recv;
+
+    Drops measurement "measurement".
 
     The required "on_success" code reference is executed if request was
     successful, otherwise executes the required "on_error" code reference.
@@ -253,6 +324,70 @@ METHODS
     The required "on_success" code reference is executed if request was
     successful, otherwise executes the required "on_error" code reference.
 
+   drop_shard
+        $cv = AE::cv;
+        $db->drop_shard(
+            database => 'mydb',
+
+            # raw query
+            q => "DROP SHARD 1",
+
+            # or query created from arguments
+            id => 1,
+
+            # callbacks
+            on_success => $cv,
+            on_error => sub {
+                $cv->croak("Failed to drop measurement: @_");
+            }
+        );
+        $cv->recv;
+
+    Drops shard identified by id number "id".
+
+    The required "on_success" code reference is executed if request was
+    successful, otherwise executes the required "on_error" code reference.
+
+   show_queries
+        $cv = AE::cv;
+        $db->show_queries(
+            on_success => $cv,
+            on_error => sub {
+                $cv->croak("Failed to list shard groups: @_");
+            }
+        );
+        my @queries = $cv->recv;
+        for my $q ( @queries ) {
+            print "ID: $q->{qid}\n";
+            print "Query: $q->{query}\n";
+            print "Database: $q->{database}\n";
+            print "Duration: $q->{duration}\n";
+        }
+
+    Returns a list of hash references with keys "qid", "query", "database",
+    "duration" for all currently running queries.
+
+    The required "on_success" code reference is executed if request was
+    successful, otherwise executes the required "on_error" code reference.
+
+   kill_query
+        $cv = AE::cv;
+        $db->kill_query(
+            id => 36,
+
+            # callbacks
+            on_success => $cv,
+            on_error => sub {
+                $cv->croak("Failed to kill query: @_");
+            }
+        );
+        $cv->recv;
+
+    Stops a running query identified by id number "id".
+
+    The required "on_success" code reference is executed if request was
+    successful, otherwise executes the required "on_error" code reference.
+
   Retention Policy Management
    create_retention_policy
         $cv = AE::cv;
@@ -264,6 +399,7 @@ METHODS
             name => 'last_day',
             database => 'mydb',
             duration => '1d',
+            shard_duration => '168h',
             replication => 1,
             default => 0,
 
@@ -276,9 +412,9 @@ METHODS
         $cv->recv;
 
     Creates new retention policy named by "name" on database "database" with
-    duration "duration" and replication factor "replication". If "default"
-    is provided and true the created retention policy becomes the default
-    one.
+    duration "duration", shard group duration "shard_duration" and
+    replication factor "replication". If "default" is provided and true the
+    created retention policy becomes the default one.
 
     The required "on_success" code reference is executed if request was
     successful, otherwise executes the required "on_error" code reference.
@@ -294,6 +430,7 @@ METHODS
             database => 'mydb',
 
             duration => '1d',
+            shard_duration => '12h',
             replication => 1,
             default => 1,
 
@@ -308,36 +445,6 @@ METHODS
     Modifies retention policy named by "name" on database "database". At
     least one of duration "duration", replication factor "replication" or
     flag "default" must be set.
-
-    The required "on_success" code reference is executed if request was
-    successful, otherwise executes the required "on_error" code reference.
-
-   show_retention_policies
-        $cv = AE::cv;
-        $db->show_retention_policies(
-            # raw query
-            q => "SHOW RETENTION POLICIES ON mydb",
-
-            # or query created from arguments
-            database => 'mydb',
-
-            # callbacks
-            on_success => $cv,
-            on_error => sub {
-                $cv->croak("Failed to list retention policies: @_");
-            }
-        );
-        my @retention_policies = $cv->recv;
-        for my $rp ( @retention_policies ) {
-            print "Name: $rp->{name}\n";
-            print "Duration: $rp->{duration}\n";
-            print "Replication factor: $rp->{replicaN}\n";
-            print "Default?: $rp->{default}\n";
-        }
-
-    Returns a list of hash references with keys "name", "duration",
-    "replicaN" and "default" for each replication policy defined on database
-    "database".
 
     The required "on_success" code reference is executed if request was
     successful, otherwise executes the required "on_error" code reference.
@@ -361,6 +468,234 @@ METHODS
         $cv->recv;
 
     Drops specified by "name" retention policy on database "database".
+
+    The required "on_success" code reference is executed if request was
+    successful, otherwise executes the required "on_error" code reference.
+
+  Schema Exploration
+   show_databases
+        $cv = AE::cv;
+        $db->show_databases(
+            on_success => $cv,
+            on_error => sub {
+                $cv->croak("Failed to list databases: @_");
+            }
+        );
+        my @db_names = $cv->recv;
+        print "$_\n" for @db_names;
+
+    Returns list of known database names.
+
+    The required "on_success" code reference is executed if request was
+    successful, otherwise executes the required "on_error" code reference.
+
+   show_retention_policies
+        $cv = AE::cv;
+        $db->show_retention_policies(
+            # raw query
+            q => "SHOW RETENTION POLICIES ON mydb",
+
+            # or query created from arguments
+            database => 'mydb',
+
+            # callbacks
+            on_success => $cv,
+            on_error => sub {
+                $cv->croak("Failed to list retention policies: @_");
+            }
+        );
+        my @retention_policies = $cv->recv;
+        for my $rp ( @retention_policies ) {
+            print "Name: $rp->{name}\n";
+            print "Duration: $rp->{duration}\n";
+            print "Shard group duration: $rp->{shardGroupDuration}\n";
+            print "Replication factor: $rp->{replicaN}\n";
+            print "Default?: $rp->{default}\n";
+        }
+
+    Returns a list of hash references with keys "name", "duration",
+    "shardGroupDuration", "replicaN" and "default" for each replication
+    policy defined on database "database".
+
+    The required "on_success" code reference is executed if request was
+    successful, otherwise executes the required "on_error" code reference.
+
+   show_series
+        $cv = AE::cv;
+        $db->show_series(
+            database => 'mydb',
+
+            # raw query
+            q => "SHOW SERIES FROM cpu_load"
+                ." WHERE host = 'server02'"
+                ." ORDER BY region"
+                ." LIMIT 10 OFFSET 3",
+
+            # or query created from arguments
+            measurement => 'cpu_load',
+            where => q{host = 'server02'},
+
+            order_by => 'region',
+
+            limit => 10,
+            offset => 3,
+
+            # callbacks
+            on_success => $cv,
+            on_error => sub {
+                $cv->croak("Failed to list series: @_");
+            }
+        );
+        my @series = $cv->recv;
+        print "$_\n" for @series;
+
+    Returns names of series from database "database" using optional
+    measurement "measurement" and optional "where" clause.
+
+    The required "on_success" code reference is executed if request was
+    successful, otherwise executes the required "on_error" code reference.
+
+   show_measurements
+        $cv = AE::cv;
+        $db->show_measurements(
+            database => 'mydb',
+
+            # raw query
+            q => "SHOW MEASUREMENTS WITH MEASUREMENT =~ /cpu_load.*/"
+                ." WHERE host = 'server02'"
+                ." ORDER BY region"
+                ." LIMIT 10 OFFSET 3",
+
+            # or query created from arguments
+            measurement => '/cpu_load.*/',
+            where => q{host = 'server02'},
+
+            order_by => 'region',
+
+            limit => 10,
+            offset => 3,
+
+            # callbacks
+            on_success => $cv,
+            on_error => sub {
+                $cv->croak("Failed to list measurements: @_");
+            }
+        );
+        my @measurements = $cv->recv;
+        print "$_\n" for @measurements;
+
+    Returns names of measurements from database "database", optionally
+    filtered with regular expression "measurement" and optional "where"
+    clause. If the "measurement" is not enclosed in "//" then it will be
+    treated as name of the measurement.
+
+    The required "on_success" code reference is executed if request was
+    successful, otherwise executes the required "on_error" code reference.
+
+   show_tag_keys
+        $cv = AE::cv;
+        $db->show_tag_keys(
+            database => 'mydb',
+
+            # raw query
+            q => "SHOW TAG KEYS FROM cpu_load WHERE host = 'server02' LIMIT 10 OFFSET 3",
+
+            # or query created from arguments
+            measurement => 'cpu_load',
+            where => q{host = 'server02'},
+
+            limit => 10,
+            offset => 3,
+
+            # callbacks
+            on_success => $cv,
+            on_error => sub {
+                $cv->croak("Failed to list tag keys: @_");
+            }
+        );
+        my $tag_keys = $cv->recv;
+        for my $measurement ( sort keys %{ $tag_keys } ) {
+            print "Measurement: $measurement\n";
+            print " * $_\n" for @{ $tag_keys->{$measurement} };
+        }
+
+    Returns a hash reference with measurements as keys and their unique tag
+    keys as values from database "database" and optional measurement
+    "measurement", optionally filtered by the "where" clause, grouped by
+    "group_by" with number of results limited to "limit" with offset
+    "offset".
+
+    The required "on_success" code reference is executed if request was
+    successful, otherwise executes the required "on_error" code reference.
+
+   show_tag_values
+        $cv = AE::cv;
+        $db->show_tag_values(
+            database => 'mydb',
+
+            # raw query
+            q => q{SHOW TAG VALUES FROM cpu_load WITH KEY = "host"},
+
+            # or query created from arguments
+            measurement => 'cpu_load',
+
+            # single key
+            key => q{"host"},
+            # or a list of keys
+            keys => [qw( "host" "region" )],
+
+            limit => 10,
+            offset => 3,
+
+            # callbacks
+            on_success => $cv,
+            on_error => sub {
+                $cv->croak("Failed to list tag values: @_");
+            }
+        );
+        my $tag_values = $cv->recv;
+        for my $measurement ( sort keys %{ $tag_values } ) {
+            print "Measurement: $measurement\n";
+            for my $tag_key ( sort keys %{ $tag_values->{$measurement} } ) {
+                print "  Tag key: $tag_key\n";
+                print "   * $_\n" for @{ $tag_values->{$measurement}->{$tag_key} };
+            }
+        }
+
+    Returns a hash reference with measurements as keys and their unique tag
+    values as values from database "database" and optional measurement
+    "measurement" from a single tag key "key" or a list of tag keys "keys"
+    with number of results limited to "limit" with offset "offset".
+
+    The required "on_success" code reference is executed if request was
+    successful, otherwise executes the required "on_error" code reference.
+
+   show_field_keys
+        $cv = AE::cv;
+        $db->show_field_keys(
+            database => 'mydb',
+
+            # raw query
+            q => "SHOW FIELD KEYS FROM cpu_load",
+
+            # or query created from arguments
+            measurement => 'cpu_load',
+
+            # callbacks
+            on_success => $cv,
+            on_error => sub {
+                $cv->croak("Failed to list field keys: @_");
+            }
+        );
+        my $field_keys = $cv->recv;
+        for my $measurement ( sort keys %{ $field_keys } ) {
+            print "Measurement: $measurement\n";
+            print " * $_\n" for @{ $field_keys->{$measurement} };
+        }
+
+    Returns a hash reference with measurements as keys and their field keys
+    as values from database "database" and optional measurement
+    "measurement".
 
     The required "on_success" code reference is executed if request was
     successful, otherwise executes the required "on_error" code reference.
@@ -546,241 +881,6 @@ METHODS
         $cv->recv;
 
     Drops user "username".
-
-    The required "on_success" code reference is executed if request was
-    successful, otherwise executes the required "on_error" code reference.
-
-  Schema Exploration
-   show_measurements
-        $cv = AE::cv;
-        $db->show_measurements(
-            database => 'mydb',
-
-            # raw query
-            q => "SHOW MEASUREMENTS WITH MEASUREMENT =~ /cpu_load.*/"
-                ." WHERE host = 'server02'"
-                ." ORDER BY region"
-                ." LIMIT 10 OFFSET 3",
-
-            # or query created from arguments
-            measurement => '/cpu_load.*/',
-            where => q{host = 'server02'},
-
-            order_by => 'region',
-
-            limit => 10,
-            offset => 3,
-
-            # callbacks
-            on_success => $cv,
-            on_error => sub {
-                $cv->croak("Failed to list measurements: @_");
-            }
-        );
-        my @measurements = $cv->recv;
-        print "$_\n" for @measurements;
-
-    Returns names of measurements from database "database", optionally
-    filtering the matching the measurements with regular expression
-    "measurement" and filtered by optional "where" clause. If the
-    "measurement" is not enclosed in "//" then it will be treated as name of
-    the measurement.
-
-    The required "on_success" code reference is executed if request was
-    successful, otherwise executes the required "on_error" code reference.
-
-   drop_measurement
-        $cv = AE::cv;
-        $db->drop_measurement(
-            database => 'mydb',
-
-            # raw query
-            q => "DROP MEASUREMENT cpu_load",
-
-            # or query created from arguments
-            measurement => 'cpu_load',
-
-            # callbacks
-            on_success => $cv,
-            on_error => sub {
-                $cv->croak("Failed to drop measurement: @_");
-            }
-        );
-        $cv->recv;
-
-    Drops measurement "measurement".
-
-    The required "on_success" code reference is executed if request was
-    successful, otherwise executes the required "on_error" code reference.
-
-   show_series
-        $cv = AE::cv;
-        $db->show_series(
-            database => 'mydb',
-
-            # raw query
-            q => "SHOW SERIES FROM cpu_load"
-                ." WHERE host = 'server02'"
-                ." ORDER BY region"
-                ." LIMIT 10 OFFSET 3",
-
-            # or query created from arguments
-            measurement => 'cpu_load',
-            where => q{host = 'server02'},
-
-            order_by => 'region',
-
-            limit => 10,
-            offset => 3,
-
-            # callbacks
-            on_success => $cv,
-            on_error => sub {
-                $cv->croak("Failed to list series: @_");
-            }
-        );
-        my $series = $cv->recv;
-        for my $measurement ( sort keys %{ $series } ) {
-            print "Measurement: $measurement\n";
-            for my $s ( @{ $series->{$measurement} } ) {
-                print " * $_: $s->{$_}\n" for sort keys %{ $s };
-            }
-        }
-
-    Returns from database "database" and optional measurement "measurement",
-    optionally filtered by the "where" clause, a hash reference with
-    measurements as keys and their unique tag sets as values.
-
-    The required "on_success" code reference is executed if request was
-    successful, otherwise executes the required "on_error" code reference.
-
-   drop_series
-        $cv = AE::cv;
-        $db->drop_series(
-            database => 'mydb',
-
-            # raw query
-            q => "DROP SERIES FROM cpu_load WHERE host = 'server02'",
-
-            # or query created from arguments
-            measurement => 'cpu_load',
-            where => q{host = 'server02'},
-
-            # callbacks
-            on_success => $cv,
-            on_error => sub {
-                $cv->croak("Failed to drop measurement: @_");
-            }
-        );
-        $cv->recv;
-
-    Drops series from measurement "measurement" and/or filtered by "where"
-    clause from database "database".
-
-    The required "on_success" code reference is executed if request was
-    successful, otherwise executes the required "on_error" code reference.
-
-   show_tag_keys
-        $cv = AE::cv;
-        $db->show_tag_keys(
-            database => 'mydb',
-
-            # raw query
-            q => "SHOW TAG KEYS FROM cpu_load WHERE host = 'server02' LIMIT 10 OFFSET 3",
-
-            # or query created from arguments
-            measurement => 'cpu_load',
-            where => q{host = 'server02'},
-
-            limit => 10,
-            offset => 3,
-
-            # callbacks
-            on_success => $cv,
-            on_error => sub {
-                $cv->croak("Failed to list tag keys: @_");
-            }
-        );
-        my $tag_keys = $cv->recv;
-        for my $measurement ( sort keys %{ $tag_keys } ) {
-            print "Measurement: $measurement\n";
-            print " * $_\n" for @{ $tag_keys->{$measurement} };
-        }
-
-    Returns a hash reference with measurements as keys and their unique tag
-    keys as values from database "database" and optional measurement
-    "measurement", optionally filtered by the "where" clause, grouped by
-    "group_by" and number of results limited to "limit" with offset
-    "offset". To limit number of returned series use "slimit" with offset
-    "soffset".
-
-    The required "on_success" code reference is executed if request was
-    successful, otherwise executes the required "on_error" code reference.
-
-   show_tag_values
-        $cv = AE::cv;
-        $db->show_tag_values(
-            database => 'mydb',
-
-            # raw query
-            q => "SHOW TAG VALUES FROM cpu_load WITH KEY = 'host' WHERE host = 'server02'",
-
-            # or query created from arguments
-            measurement => 'cpu_load',
-
-            # single key
-            key => 'host',
-            # or a list of keys
-            keys => [qw( host region )],
-
-            where => q{host = 'server02'},
-
-            # callbacks
-            on_success => $cv,
-            on_error => sub {
-                $cv->croak("Failed to list tag values: @_");
-            }
-        );
-        my $tag_values = $cv->recv;
-        for my $tag_key ( sort keys %{ $tag_values } ) {
-            print "Tag key: $tag_key\n";
-            print " * $_\n" for @{ $tag_values->{$tag_key} };
-        }
-
-    Returns from database "database" and optional measurement "measurement",
-    values from a single tag key "key" or a list of tag keys "keys",
-    optionally filtered by the "where" clause, a hash reference with tag
-    keys as keys and their unique tag values as values.
-
-    The required "on_success" code reference is executed if request was
-    successful, otherwise executes the required "on_error" code reference.
-
-   show_field_keys
-        $cv = AE::cv;
-        $db->show_field_keys(
-            database => 'mydb',
-
-            # raw query
-            q => "SHOW FIELD KEYS FROM cpu_load",
-
-            # or query created from arguments
-            measurement => 'cpu_load',
-
-            # callbacks
-            on_success => $cv,
-            on_error => sub {
-                $cv->croak("Failed to list field keys: @_");
-            }
-        );
-        my $field_keys = $cv->recv;
-        for my $measurement ( sort keys %{ $field_keys } ) {
-            print "Measurement: $measurement\n";
-            print " * $_\n" for @{ $field_keys->{$measurement} };
-        }
-
-    Returns field keys from all measurements from database "database".
-    Single measurement can be specified with optional "measurement"
-    parameter.
 
     The required "on_success" code reference is executed if request was
     successful, otherwise executes the required "on_error" code reference.
@@ -983,7 +1083,7 @@ METHODS
     Executes an select query on database "database" created from provided
     arguments measurement "measurement", fields to select "fields", optional
     "where" clause, grouped by "group_by" and empty values filled with
-    "fill", ordered by "order_by" and number of results limited to "limit"
+    "fill", ordered by "order_by" with number of results limited to "limit"
     with offset "offset". To limit number of returned series use "slimit"
     with offset "soffset". If "into" parameter is provided the result of the
     query will be copied to specified measurement. If "epoch" is provided
@@ -997,6 +1097,7 @@ METHODS
    query
         $cv = AE::cv;
         $db->query(
+            method => 'GET',
             query => {
                 db => 'mydb',
                 q => 'SELECT * FROM cpu_load',
@@ -1018,11 +1119,11 @@ METHODS
         $cv = AE::cv;
         $db->create_subscription(
             # raw query
-            q => 'CREATE SUBSCRIPTION "alldata" ON "mydb"."default"'
+            q => 'CREATE SUBSCRIPTION alldata ON "mydb"."default"'
                 ." DESTINATIONS ANY 'udp://h1.example.com:9090', 'udp://h2.example.com:9090'",
 
             # or query created from arguments
-            name => q{"alldata"},
+            name => q{alldata},
             database => q{"mydb"},
             rp => q{"default"},
             mode => "ANY",
