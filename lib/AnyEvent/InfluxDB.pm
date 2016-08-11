@@ -279,6 +279,332 @@ sub ping {
     );
 }
 
+=head2 Managing Data
+
+=head3 write
+
+    $cv = AE::cv;
+    $db->write(
+        database => 'mydb',
+        precision => 's',
+        rp => 'last_day',
+        consistency => 'quorum',
+
+        data => [
+            # line protocol formatted
+            'cpu_load,host=server02,region=eu-east sensor="top",value=0.64 1456097956',
+
+            # or as a hash
+            {
+                measurement => 'cpu_load',
+                tags => {
+                    host => 'server02',
+                    region => 'eu-east',
+                },
+                fields => {
+                    value => '0.64',
+                    sensor => q{"top"},
+                },
+                time => time()
+            }
+        ],
+
+        on_success => $cv,
+        on_error => sub {
+            $cv->croak("Failed to write data: @_");
+        }
+    );
+    $cv->recv;
+
+Writes time-series data C<data> to database C<database> with optional parameters:
+retention policy C<rp>, time precision C<precision> and consistency C<consistency>.
+
+The required C<on_success> code reference is executed if request was successful,
+otherwise executes the required C<on_error> code reference.
+
+The C<data> can be specified as single scalar value or hash reference with
+required keys C<measurement> and C<fields> and optional C<tags> and C<time>.
+Both can be also mixed and matched within an array reference.
+
+Scalar values are expected to be formatted using InfluxDB line protocol.
+
+All special characters need to be escaped. In that case you might want to use
+L<InfluxDB::LineProtocol>:
+
+    use InfluxDB::LineProtocol qw(dataline);
+
+    ...
+    $db->write(
+        database => 'mydb',
+        precision => 'n',
+
+        data => [
+            dataline('CPU Load', 0.64, { "Region of the World" => "Eastern Europe", codename => "eu-east" }, 1437868012260500137)
+
+            # which translates to
+            'CPU\ Load,Region\ of\ the\ World=Eastern\ Europe,codename=eu-east value=0.64 1437868012260500137',
+        ],
+        ...
+    );
+
+
+=cut
+
+sub _to_line {
+    my $data = shift;
+
+    my $t = $data->{tags} || {};
+    my $f = $data->{fields} || {};
+
+    return $data->{measurement}
+        .(
+            $t ?
+                    ','.
+                    join(',',
+                        map {
+                            join('=', $_, $t->{$_})
+                        } sort { $a cmp $b } keys %$t
+                    )
+                :
+                ''
+        )
+        . ' '
+        .(
+            join(',',
+                map {
+                    join('=', $_, $f->{$_})
+                } keys %$f
+            )
+        )
+        .(
+            $data->{time} ?
+                ' '. $data->{time}
+                :
+                ''
+        );
+}
+
+sub write {
+    my ($self, %args) = @_;
+
+    my $data = ref $args{data} eq 'ARRAY' ?
+        join("\n", map { ref $_ eq 'HASH' ? _to_line($_) : $_ } @{ $args{data} })
+        :
+        ref $args{data} eq 'HASH' ? _to_line($args{data}) : $args{data};
+
+    my $url = $self->_make_url('/write', {
+        db => $args{database},
+        (
+            $args{consistency} ?
+                ( consistency => $args{consistency} )
+                :
+                ()
+        ),
+        (
+            $args{rp} ?
+                ( rp => $args{rp} )
+                :
+                ()
+        ),
+        (
+            $args{precision} ?
+                ( precision => $args{precision} )
+                :
+                ()
+        ),
+        (
+            $args{one} ?
+                ( one => $args{one} )
+                :
+                ()
+        )
+    });
+
+    $self->_http_request( POST => $url, $data,
+        sub {
+            my ($body, $headers) = @_;
+
+            if ( $headers->{Status} eq '204' ) {
+                $args{on_success}->();
+            } else {
+                $args{on_error}->( $body );
+            }
+        }
+    );
+}
+
+=head2 Querying Data
+
+=head3 select
+
+    $cv = AE::cv;
+    $db->select(
+        database => 'mydb',
+
+        # return time in Unix epoch format
+        epoch => "s",
+
+        # raw query
+        q => "SELECT count(value) FROM cpu_load"
+            ." WHERE region = 'eu-east' AND time > now() - 14d"
+            ." GROUP BY time(1d) fill(none)"
+            ." ORDER BY time DESC"
+            ." LIMIT 10 OFFSET 3",
+
+        # or query created from arguments
+        fields => 'count(value)',
+        measurement => 'cpu_load',
+        where => "region = 'eu-east' AND time > now() - 14d",
+
+        group_by => 'time(1d)',
+        fill => 'none',
+
+        order_by => 'time DESC',
+
+        limit => 10,
+        offset => 3,
+
+        # downsample result to another database, retention policy and measurement
+        into => 'otherdb."default".cpu_load_per5m',
+
+        # callbacks
+        on_success => $cv,
+        on_error => sub {
+            $cv->croak("Failed to select data: @_");
+        }
+    );
+    my $results = $cv->recv;
+    for my $row ( @{ $results } ) {
+        print "Measurement: $row->{name}\n";
+        print "Values:\n";
+        for my $value ( @{ $row->{values} || [] } ) {
+            print " * $_ = $value->{$_}\n" for keys %{ $value || {} };
+        }
+    }
+
+Executes an select query on database C<database> created from provided arguments
+measurement C<measurement>, fields to select C<fields>, optional C<where>
+clause, grouped by C<group_by> and empty values filled with C<fill>, ordered by
+C<order_by> with number of results limited to C<limit> with offset C<offset>.
+To limit number of returned series use C<slimit> with offset C<soffset>.
+If C<into> parameter is provided the result of the query will be copied to specified
+measurement.
+If C<epoch> is provided the returned C<time> value will in Unix epoch format.
+Optional C<chunk_size> can be provided to override the default value of 10,000 datapoints.
+
+The required C<on_success> code reference is executed if request was successful,
+otherwise executes the required C<on_error> code reference.
+
+=cut
+
+sub select {
+    my ($self, %args) = @_;
+
+    my $method = 'GET';
+    my $q;
+    if ( exists $args{q} ) {
+        $q = $args{q};
+        if ( $q =~ /\s+INTO\s+/i ) {
+            $method = 'POST';
+        }
+    } else {
+        $q = 'SELECT '. $args{fields};
+
+        if ( my $into = $args{into} ) {
+            $q .= ' INTO '. $into;
+            $method = 'POST';
+        }
+
+        $q .= ' FROM '. $args{measurement};
+
+        if ( my $cond = $args{where} ) {
+            $q .= ' WHERE '. $cond;
+        }
+
+        if ( my $group = $args{group_by} ) {
+            $q .= ' GROUP BY '. $group;
+
+            if ( my $fill = $args{fill} ) {
+                $q .= ' fill('. $fill .')';
+            }
+        }
+
+        if ( my $order_by = $args{order_by} ) {
+            $q .= ' ORDER BY '. $order_by;
+        }
+
+        if ( my $limit = $args{limit} ) {
+            $q .= ' LIMIT '. $limit;
+
+            if ( my $offset = $args{offset} ) {
+                $q .= ' OFFSET '. $offset;
+            }
+        }
+
+        if ( my $slimit = $args{slimit} ) {
+            $q .= ' SLIMIT '. $slimit;
+
+            if ( my $soffset = $args{soffset} ) {
+                $q .= ' SOFFSET '. $soffset;
+            }
+        }
+    }
+
+    my $url = $self->_make_url('/query', {
+        db => $args{database},
+        q => $q,
+        (
+            $args{rp} ?
+                ( rp => $args{rp} )
+                :
+                ()
+        ),
+        (
+            $args{epoch} ?
+                ( epoch => $args{epoch} )
+                :
+                ()
+        ),
+        (
+            $args{chunk_size} ?
+                ( chunk_size => $args{chunk_size} )
+                :
+                ()
+        ),
+    });
+
+    $self->_http_request( $method => $url,
+        sub {
+            my ($body, $headers) = @_;
+
+            if ( $headers->{Status} eq '200' ) {
+                my $data = decode_json($body);
+                my $series = [
+                    map {
+                        my $res = $_;
+
+                        my $cols = $res->{columns};
+                        my $values = $res->{values};
+
+                        +{
+                            name => $res->{name},
+                            values => [
+                                map {
+                                    +{
+                                        zip(@$cols, @$_)
+                                    }
+                                } @{ $values || [] }
+                            ]
+                        }
+                    } @{ $data->{results}->[0]->{series} || [] }
+                ];
+                $args{on_success}->($series);
+            } else {
+                $args{on_error}->( $body );
+            }
+        }
+    );
+}
 
 =head2 Database Management
 
@@ -2266,370 +2592,6 @@ sub show_continuous_queries {
     );
 }
 
-
-=head2 Managing Data
-
-=head3 write
-
-    $cv = AE::cv;
-    $db->write(
-        database => 'mydb',
-        precision => 's',
-        rp => 'last_day',
-        consistency => 'quorum',
-
-        data => [
-            # line protocol formatted
-            'cpu_load,host=server02,region=eu-east sensor="top",value=0.64 1456097956',
-
-            # or as a hash
-            {
-                measurement => 'cpu_load',
-                tags => {
-                    host => 'server02',
-                    region => 'eu-east',
-                },
-                fields => {
-                    value => '0.64',
-                    sensor => q{"top"},
-                },
-                time => time()
-            }
-        ],
-
-        on_success => $cv,
-        on_error => sub {
-            $cv->croak("Failed to write data: @_");
-        }
-    );
-    $cv->recv;
-
-Writes time-series data C<data> to database C<database> with optional parameters:
-retention policy C<rp>, time precision C<precision> and consistency C<consistency>.
-
-The required C<on_success> code reference is executed if request was successful,
-otherwise executes the required C<on_error> code reference.
-
-The C<data> can be specified as single scalar value or hash reference with
-required keys C<measurement> and C<fields> and optional C<tags> and C<time>.
-Both can be also mixed and matched within an array reference.
-
-Scalar values are expected to be formatted using InfluxDB line protocol.
-
-All special characters need to be escaped. In that case you might want to use
-L<InfluxDB::LineProtocol>:
-
-    use InfluxDB::LineProtocol qw(dataline);
-
-    ...
-    $db->write(
-        database => 'mydb',
-        precision => 'n',
-
-        data => [
-            dataline('CPU Load', 0.64, { "Region of the World" => "Eastern Europe", codename => "eu-east" }, 1437868012260500137)
-
-            # which translates to
-            'CPU\ Load,Region\ of\ the\ World=Eastern\ Europe,codename=eu-east value=0.64 1437868012260500137',
-        ],
-        ...
-    );
-
-
-=cut
-
-sub _to_line {
-    my $data = shift;
-
-    my $t = $data->{tags} || {};
-    my $f = $data->{fields} || {};
-
-    return $data->{measurement}
-        .(
-            $t ?
-                    ','.
-                    join(',',
-                        map {
-                            join('=', $_, $t->{$_})
-                        } sort { $a cmp $b } keys %$t
-                    )
-                :
-                ''
-        )
-        . ' '
-        .(
-            join(',',
-                map {
-                    join('=', $_, $f->{$_})
-                } keys %$f
-            )
-        )
-        .(
-            $data->{time} ?
-                ' '. $data->{time}
-                :
-                ''
-        );
-}
-
-sub write {
-    my ($self, %args) = @_;
-
-    my $data = ref $args{data} eq 'ARRAY' ?
-        join("\n", map { ref $_ eq 'HASH' ? _to_line($_) : $_ } @{ $args{data} })
-        :
-        ref $args{data} eq 'HASH' ? _to_line($args{data}) : $args{data};
-
-    my $url = $self->_make_url('/write', {
-        db => $args{database},
-        (
-            $args{consistency} ?
-                ( consistency => $args{consistency} )
-                :
-                ()
-        ),
-        (
-            $args{rp} ?
-                ( rp => $args{rp} )
-                :
-                ()
-        ),
-        (
-            $args{precision} ?
-                ( precision => $args{precision} )
-                :
-                ()
-        ),
-        (
-            $args{one} ?
-                ( one => $args{one} )
-                :
-                ()
-        )
-    });
-
-    $self->_http_request( POST => $url, $data,
-        sub {
-            my ($body, $headers) = @_;
-
-            if ( $headers->{Status} eq '204' ) {
-                $args{on_success}->();
-            } else {
-                $args{on_error}->( $body );
-            }
-        }
-    );
-}
-
-=head2 Querying Data
-
-=head3 select
-
-    $cv = AE::cv;
-    $db->select(
-        database => 'mydb',
-
-        # return time in Unix epoch format
-        epoch => "s",
-
-        # raw query
-        q => "SELECT count(value) FROM cpu_load"
-            ." WHERE region = 'eu-east' AND time > now() - 14d"
-            ." GROUP BY time(1d) fill(none)"
-            ." ORDER BY time DESC"
-            ." LIMIT 10 OFFSET 3",
-
-        # or query created from arguments
-        fields => 'count(value)',
-        measurement => 'cpu_load',
-        where => "region = 'eu-east' AND time > now() - 14d",
-
-        group_by => 'time(1d)',
-        fill => 'none',
-
-        order_by => 'time DESC',
-
-        limit => 10,
-        offset => 3,
-
-        # downsample result to another database, retention policy and measurement
-        into => 'otherdb."default".cpu_load_per5m',
-
-        # callbacks
-        on_success => $cv,
-        on_error => sub {
-            $cv->croak("Failed to select data: @_");
-        }
-    );
-    my $results = $cv->recv;
-    for my $row ( @{ $results } ) {
-        print "Measurement: $row->{name}\n";
-        print "Values:\n";
-        for my $value ( @{ $row->{values} || [] } ) {
-            print " * $_ = $value->{$_}\n" for keys %{ $value || {} };
-        }
-    }
-
-Executes an select query on database C<database> created from provided arguments
-measurement C<measurement>, fields to select C<fields>, optional C<where>
-clause, grouped by C<group_by> and empty values filled with C<fill>, ordered by
-C<order_by> with number of results limited to C<limit> with offset C<offset>.
-To limit number of returned series use C<slimit> with offset C<soffset>.
-If C<into> parameter is provided the result of the query will be copied to specified
-measurement.
-If C<epoch> is provided the returned C<time> value will in Unix epoch format.
-Optional C<chunk_size> can be provided to override the default value of 10,000 datapoints.
-
-The required C<on_success> code reference is executed if request was successful,
-otherwise executes the required C<on_error> code reference.
-
-=cut
-
-sub select {
-    my ($self, %args) = @_;
-
-    my $method = 'GET';
-    my $q;
-    if ( exists $args{q} ) {
-        $q = $args{q};
-        if ( $q =~ /\s+INTO\s+/i ) {
-            $method = 'POST';
-        }
-    } else {
-        $q = 'SELECT '. $args{fields};
-
-        if ( my $into = $args{into} ) {
-            $q .= ' INTO '. $into;
-            $method = 'POST';
-        }
-
-        $q .= ' FROM '. $args{measurement};
-
-        if ( my $cond = $args{where} ) {
-            $q .= ' WHERE '. $cond;
-        }
-
-        if ( my $group = $args{group_by} ) {
-            $q .= ' GROUP BY '. $group;
-
-            if ( my $fill = $args{fill} ) {
-                $q .= ' fill('. $fill .')';
-            }
-        }
-
-        if ( my $order_by = $args{order_by} ) {
-            $q .= ' ORDER BY '. $order_by;
-        }
-
-        if ( my $limit = $args{limit} ) {
-            $q .= ' LIMIT '. $limit;
-
-            if ( my $offset = $args{offset} ) {
-                $q .= ' OFFSET '. $offset;
-            }
-        }
-
-        if ( my $slimit = $args{slimit} ) {
-            $q .= ' SLIMIT '. $slimit;
-
-            if ( my $soffset = $args{soffset} ) {
-                $q .= ' SOFFSET '. $soffset;
-            }
-        }
-    }
-
-    my $url = $self->_make_url('/query', {
-        db => $args{database},
-        q => $q,
-        (
-            $args{rp} ?
-                ( rp => $args{rp} )
-                :
-                ()
-        ),
-        (
-            $args{epoch} ?
-                ( epoch => $args{epoch} )
-                :
-                ()
-        ),
-        (
-            $args{chunk_size} ?
-                ( chunk_size => $args{chunk_size} )
-                :
-                ()
-        ),
-    });
-
-    $self->_http_request( $method => $url,
-        sub {
-            my ($body, $headers) = @_;
-
-            if ( $headers->{Status} eq '200' ) {
-                my $data = decode_json($body);
-                my $series = [
-                    map {
-                        my $res = $_;
-
-                        my $cols = $res->{columns};
-                        my $values = $res->{values};
-
-                        +{
-                            name => $res->{name},
-                            values => [
-                                map {
-                                    +{
-                                        zip(@$cols, @$_)
-                                    }
-                                } @{ $values || [] }
-                            ]
-                        }
-                    } @{ $data->{results}->[0]->{series} || [] }
-                ];
-                $args{on_success}->($series);
-            } else {
-                $args{on_error}->( $body );
-            }
-        }
-    );
-}
-
-=head3 query
-
-    $cv = AE::cv;
-    $db->query(
-        method => 'GET',
-        query => {
-            db => 'mydb',
-            q => 'SELECT * FROM cpu_load',
-        },
-        on_response => $cv,
-    );
-    my ($response_data, $response_headers) = $cv->recv;
-
-Executes an arbitrary query using provided in C<query> arguments.
-
-The required C<on_response> code reference is executed with the raw response
-data and headers as parameters.
-
-=cut
-
-sub query {
-    my ($self, %args) = @_;
-
-    my $url = $self->_server_uri->clone;
-    $url->path('/query');
-    $url->query_form_hash( $args{query} );
-
-    my $method = $args{method} || 'GET';
-
-    $self->_http_request( $method => $url,
-        sub {
-            $args{on_response}->(@_);
-        }
-    );
-}
-
 =head2 Kapacitor integration
 
 Subscriptions tell InfluxDB to send all the data it receives to Kapacitor.
@@ -2821,6 +2783,43 @@ sub drop_subscription {
     );
 }
 
+=head2 Other
+
+=head3 query
+
+    $cv = AE::cv;
+    $db->query(
+        method => 'GET',
+        query => {
+            db => 'mydb',
+            q => 'SELECT * FROM cpu_load',
+        },
+        on_response => $cv,
+    );
+    my ($response_data, $response_headers) = $cv->recv;
+
+Executes an arbitrary query using provided in C<query> arguments.
+
+The required C<on_response> code reference is executed with the raw response
+data and headers as parameters.
+
+=cut
+
+sub query {
+    my ($self, %args) = @_;
+
+    my $url = $self->_server_uri->clone;
+    $url->path('/query');
+    $url->query_form_hash( $args{query} );
+
+    my $method = $args{method} || 'GET';
+
+    $self->_http_request( $method => $url,
+        sub {
+            $args{on_response}->(@_);
+        }
+    );
+}
 
 =head1 CAVEATS
 
