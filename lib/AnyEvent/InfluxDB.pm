@@ -103,7 +103,7 @@ has '_server_uri' => (
 
 Asynchronous client library for InfluxDB time-series database L<https://influxdb.com>.
 
-This version is meant to be used with InfluxDB v0.13 or newer.
+This version is meant to be used with InfluxDB v1.0.0 or newer.
 
 =head1 METHODS
 
@@ -1916,11 +1916,15 @@ sub show_tag_values {
     my $field_keys = $cv->recv;
     for my $measurement ( sort keys %{ $field_keys } ) {
         print "Measurement: $measurement\n";
-        print " * $_\n" for @{ $field_keys->{$measurement} };
+        for my $field ( @{ $field_keys->{$measurement} } ) {
+            print "  Key:  $field->{key}\n";
+            print "  Type: $field->{type}\n";
+        }
     }
 
-Returns a hash reference with measurements as keys and their field keys
-as values from database C<database> and optional measurement C<measurement>.
+Returns a hash reference with measurements as keys and their field keys names
+and type as values from database C<database> and optional measurement
+C<measurement>.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
@@ -1957,7 +1961,10 @@ sub show_field_keys {
                     my $values = $res->{values};
                     $field_keys->{ $res->{name } } = [
                         map {
-                            @$_
+                            +{
+                                name => $_->[0],
+                                type => $_->[1],
+                            }
                         } @{ $values || [] }
                     ];
                 }

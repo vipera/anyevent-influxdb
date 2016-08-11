@@ -3,7 +3,7 @@ NAME
     database
 
 VERSION
-    version 0.13
+    version 1.0.0
 
 SYNOPSIS
         use EV;
@@ -73,7 +73,7 @@ DESCRIPTION
     Asynchronous client library for InfluxDB time-series database
     <https://influxdb.com>.
 
-    This version is meant to be used with InfluxDB v0.13 or newer.
+    This version is meant to be used with InfluxDB v1.0.0 or newer.
 
 METHODS
   new
@@ -815,12 +815,15 @@ METHODS
         my $field_keys = $cv->recv;
         for my $measurement ( sort keys %{ $field_keys } ) {
             print "Measurement: $measurement\n";
-            print " * $_\n" for @{ $field_keys->{$measurement} };
+            for my $field ( @{ $field_keys->{$measurement} } ) {
+                print "  Key:  $field->{key}\n";
+                print "  Type: $field->{type}\n";
+            }
         }
 
     Returns a hash reference with measurements as keys and their field keys
-    as values from database "database" and optional measurement
-    "measurement".
+    names and type as values from database "database" and optional
+    measurement "measurement".
 
     The required "on_success" code reference is executed if request was
     successful, otherwise executes the required "on_error" code reference.

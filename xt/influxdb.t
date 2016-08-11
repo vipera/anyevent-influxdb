@@ -154,7 +154,7 @@ my $cv;
     is_deeply(
         [ @retention_policies ],
         [
-            { name => "default", duration => 0, shardGroupDuration => '168h0m0s', replicaN => 1, default => $true },
+            { name => "autogen", duration => 0, shardGroupDuration => '168h0m0s', replicaN => 1, default => $true },
             { name => "last_day", duration => "48h0m0s", shardGroupDuration => '24h0m0s', replicaN => 1, default => $false },
         ],
         "Retention policies listed"
@@ -221,8 +221,8 @@ my $cv;
                     name => 'per5minutes',
                     query => 'CREATE CONTINUOUS QUERY per5minutes ON mydb'
                         .' RESAMPLE EVERY 10s FOR 10m BEGIN'
-                        .' SELECT mean(value) INTO mydb."default".cpu_load_per5m'
-                        .' FROM mydb."default".cpu_load GROUP BY time(5m) END',
+                        .' SELECT mean(value) INTO mydb.autogen.cpu_load_per5m'
+                        .' FROM mydb.autogen.cpu_load GROUP BY time(5m) END',
                 }
             ]
         },
@@ -412,7 +412,7 @@ my $cv;
 
         $db->write(
             database => 'mydb',
-            rp => 'default',
+            rp => 'autogen',
             precision => 's',
             data => [
                     map {
@@ -590,13 +590,21 @@ my $cv;
     my $field_keys = $cv->recv;
     cmp_deeply($field_keys,
         {
-            "cpu_load" => array_each(any(@fields,qw(request value))),
+            "cpu_load" => array_each(
+                {
+                    name => any(@fields, qw(request value)),
+                    type => any(qw(float string))
+                }
+            ),
         },
         "field keys"
     );
     for my $measurement ( sort keys %{ $field_keys } ) {
         note "Measurement: $measurement";
-        note " * $_" for @{ $field_keys->{$measurement} };
+        for my $field ( @{ $field_keys->{$measurement} } ) {
+            note "  Key:  $field->{name}";
+            note "  Type: $field->{type}";
+        }
     }
 }
 {
@@ -663,7 +671,7 @@ my $cv;
             {
                 id => $pos_int,
                 database => any(qw(_internal mydb)),
-                retention_policy => any(qw(monitor default)),
+                retention_policy => any(qw(monitor autogen)),
                 start_time => $dt_re,
                 end_time => $dt_re,
                 expiry_time => $dt_re,
@@ -742,7 +750,7 @@ my $cv;
                     {
                         id => $pos_int,
                         database => 'mydb',
-                        retention_policy => 'default',
+                        retention_policy => 'autogen',
                         shard_group => $pos_int,
                         start_time => $dt_re,
                         end_time => $dt_re,
@@ -767,7 +775,7 @@ my $cv;
     $db->create_subscription(
         name => q{alldata},
         database => q{"mydb"},
-        rp => q{"default"},
+        rp => q{"autogen"},
         mode => "ANY",
         destinations => [
             q{'udp://h1.example.com:9090'},
@@ -785,7 +793,7 @@ my $cv;
     $db->create_subscription(
         name => q{"alldata2"},
         database => q{"mydb"},
-        rp => q{"default"},
+        rp => q{"autogen"},
         mode => "ALL",
         destinations => q{'udp://h1.example.com:9090'},
 
@@ -800,7 +808,7 @@ my $cv;
     $db->create_subscription(
         name => q{"alldata3"},
         database => q{"foo"},
-        rp => q{"default"},
+        rp => q{"autogen"},
         mode => "ALL",
         destinations => q{'udp://h2.example.com:9090'},
 
@@ -832,7 +840,7 @@ my $cv;
                     ],
                     mode => "ALL",
                     name => "alldata3",
-                    retention_policy => "default"
+                    retention_policy => "autogen"
                 }
             ],
             mydb => [
@@ -843,7 +851,7 @@ my $cv;
                     ],
                     mode => "ANY",
                     name => "alldata",
-                    retention_policy => "default"
+                    retention_policy => "autogen"
                 },
                 {
                     destinations => [
@@ -851,7 +859,7 @@ my $cv;
                     ],
                     mode => "ALL",
                     name => "alldata2",
-                    retention_policy => "default"
+                    retention_policy => "autogen"
                 }
             ]
         },
@@ -881,7 +889,7 @@ my $cv;
         $db->drop_subscription(
             name => qq{"$s"},
             database => qq{"$d"},
-            rp => q{"default"},
+            rp => q{"autogen"},
 
             on_success => sub { $cv->send("test ok") },
             on_error => sub {
