@@ -12,7 +12,7 @@ use List::MoreUtils qw(zip);
 use URI::Encode::XS qw( uri_encode );
 use Moo;
 
-has [qw( ssl_options username password on_request )] => (
+has [qw( ssl_options username password jwt on_request )] => (
     is => 'ro',
     predicate => 1,
 );
@@ -111,8 +111,13 @@ This version is meant to be used with InfluxDB v1.0.0 or newer.
 
     my $db = AnyEvent::InfluxDB->new(
         server => 'http://localhost:8086',
+
+        # authenticate using Basic credentials
         username => 'admin',
         password => 'password',
+
+        # or use JWT token
+        jwt => 'JWT_TOKEN_BLOB'
     );
 
 Returns object representing given InfluDB C<server> connected using optionally
@@ -125,9 +130,7 @@ host certificate is performed. This can be changed by setting C<ssl_options>
 parameter with any options accepted by L<AnyEvent::TLS>.
 
     my $db = AnyEvent::InfluxDB->new(
-        server => 'https://localhost:8086',
-        username => 'admin',
-        password => 'password',
+        ...
         ssl_options => {
             verify => 1,
             verify_peername => 'https',
@@ -139,6 +142,7 @@ As an debugging aid the C<on_request> code reference may also be provided. It wi
 be executed before each request with the method name, url and POST data if set.
 
     my $db = AnyEvent::InfluxDB->new(
+        ...
         on_request => sub {
             my ($method, $url, $post_data) = @_;
             print "$method $url\n";
@@ -207,6 +211,11 @@ sub _http_request {
             'user-agent' => "AnyEvent-InfluxDB/0.13",
         }
     );
+
+    if ($self->has_jwt) {
+        $args{headers}->{Authorization} = 'Bearer '. $self->jwt;
+    }
+
     if ( $method eq 'POST' ) {
         if ( defined $post_data ) {
             $args{'body'} = $post_data;
