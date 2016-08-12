@@ -659,11 +659,7 @@ sub create_database {
     if ( exists $args{q} ) {
         $q = $args{q};
     } else {
-        $q = 'CREATE DATABASE '.
-            (
-                $args{if_not_exists} ? 'IF NOT EXISTS ' : ''
-            )
-            .$args{database};
+        $q = 'CREATE DATABASE '. $args{database};
     }
 
     my $url = $self->_make_url('/query', {
@@ -688,11 +684,10 @@ sub create_database {
     $cv = AE::cv;
     $db->drop_database(
         # raw query
-        q => "DROP DATABASE IF EXISTS mydb",
+        q => "DROP DATABASE mydb",
 
         # or query created from arguments
         database => "mydb",
-        if_exists => 1,
 
         # callbacks
         on_success => $cv,
@@ -702,9 +697,7 @@ sub create_database {
     );
     $cv->recv;
 
-Drops database specified by C<database> argument. The optional parameter
-C<if_exists> if set to true value, allows to avoid error if the database
-does not exists.
+Drops database specified by C<database> argument.
 
 The required C<on_success> code reference is executed if request was successful,
 otherwise executes the required C<on_error> code reference.
@@ -718,11 +711,7 @@ sub drop_database {
     if ( exists $args{q} ) {
         $q = $args{q};
     } else {
-        $q = 'DROP DATABASE '
-            .
-            (
-                $args{if_exists} ? 'IF EXISTS ' : ''
-            ) . $args{database};
+        $q = 'DROP DATABASE '. $args{database};
     }
 
     my $url = $self->_make_url('/query', {
