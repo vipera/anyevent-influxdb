@@ -155,7 +155,7 @@ my $cv;
         [ @retention_policies ],
         [
             { name => "autogen", duration => 0, shardGroupDuration => '168h0m0s', replicaN => 1, default => $true },
-            { name => "last_day", duration => "48h0m0s", shardGroupDuration => '24h0m0s', replicaN => 1, default => $false },
+            { name => "last_day", duration => "48h0m0s", shardGroupDuration => '12h0m0s', replicaN => 1, default => $false },
         ],
         "Retention policies listed"
     );
