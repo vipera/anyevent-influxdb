@@ -94,7 +94,7 @@ my $cv;
     note "=== create_database ===";
     $cv = AE::cv;
     $db->create_database(
-        q => "CREATE DATABASE IF NOT EXISTS mydb",
+        q => "CREATE DATABASE mydb",
         on_success => sub { $cv->send("test ok") },
         on_error => sub {
             $cv->croak("Failed to create database: @_");
