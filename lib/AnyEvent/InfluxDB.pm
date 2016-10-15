@@ -722,7 +722,7 @@ sub drop_database {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -793,7 +793,7 @@ sub drop_series {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -858,7 +858,7 @@ sub delete_series {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -913,7 +913,7 @@ sub drop_measurement {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -1083,7 +1083,7 @@ sub drop_shard {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -1188,7 +1188,7 @@ sub kill_query {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -1257,7 +1257,7 @@ sub create_retention_policy {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -1323,7 +1323,7 @@ sub alter_retention_policy {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -1376,7 +1376,7 @@ sub drop_retention_policy {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -2027,7 +2027,7 @@ sub create_user {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -2083,7 +2083,7 @@ sub set_user_password {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -2205,7 +2205,7 @@ sub grant_privileges {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -2342,7 +2342,7 @@ sub revoke_privileges {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -2395,7 +2395,7 @@ sub drop_user {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -2473,7 +2473,7 @@ sub create_continuous_query {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -2526,7 +2526,7 @@ sub drop_continuous_query {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -2662,7 +2662,7 @@ sub create_subscription {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
@@ -2779,7 +2779,7 @@ sub drop_subscription {
         sub {
             my ($body, $headers) = @_;
 
-            if ( $headers->{Status} eq '200' && $body eq '{"results":[{}]}' ) {
+            if ( $headers->{Status} eq '200' ) {
                 $args{on_success}->();
             } else {
                 $args{on_error}->( $body );
