@@ -3,7 +3,7 @@ NAME
     database
 
 VERSION
-    version 1.0.0
+    version 1.0.2.0
 
 SYNOPSIS
         use EV;
@@ -79,8 +79,13 @@ METHODS
   new
         my $db = AnyEvent::InfluxDB->new(
             server => 'http://localhost:8086',
+
+            # authenticate using Basic credentials
             username => 'admin',
             password => 'password',
+
+            # or use JWT token
+            jwt => 'JWT_TOKEN_BLOB'
         );
 
     Returns object representing given InfluDB "server" connected using
@@ -93,9 +98,7 @@ METHODS
     "ssl_options" parameter with any options accepted by AnyEvent::TLS.
 
         my $db = AnyEvent::InfluxDB->new(
-            server => 'https://localhost:8086',
-            username => 'admin',
-            password => 'password',
+            ...
             ssl_options => {
                 verify => 1,
                 verify_peername => 'https',
@@ -108,6 +111,7 @@ METHODS
     url and POST data if set.
 
         my $db = AnyEvent::InfluxDB->new(
+            ...
             on_request => sub {
                 my ($method, $url, $post_data) = @_;
                 print "$method $url\n";
@@ -301,11 +305,10 @@ METHODS
         $cv = AE::cv;
         $db->drop_database(
             # raw query
-            q => "DROP DATABASE IF EXISTS mydb",
+            q => "DROP DATABASE mydb",
 
             # or query created from arguments
             database => "mydb",
-            if_exists => 1,
 
             # callbacks
             on_success => $cv,
@@ -315,9 +318,7 @@ METHODS
         );
         $cv->recv;
 
-    Drops database specified by "database" argument. The optional parameter
-    "if_exists" if set to true value, allows to avoid error if the database
-    does not exists.
+    Drops database specified by "database" argument.
 
     The required "on_success" code reference is executed if request was
     successful, otherwise executes the required "on_error" code reference.
