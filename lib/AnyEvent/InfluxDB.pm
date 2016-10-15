@@ -150,7 +150,7 @@ be executed before each request with the method name, url and POST data if set.
         }
     );
 
-=for Pod::Coverage has_on_request has_password has_ssl_options has_username on_request password server ssl_options username
+=for Pod::Coverage has_jwt jwt has_on_request has_password has_ssl_options has_username on_request password server ssl_options username
 
 =cut
 
