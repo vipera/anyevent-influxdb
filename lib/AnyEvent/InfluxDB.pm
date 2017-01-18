@@ -367,7 +367,7 @@ sub _to_line {
 
     return $data->{measurement}
         .(
-            $t ?
+            %$t ?
                     ','.
                     join(',',
                         map {
