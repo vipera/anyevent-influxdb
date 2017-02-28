@@ -593,10 +593,17 @@ sub select {
                         my $res = $_;
 
                         my $cols = $res->{columns};
+                        my $tags = $res->{tags};
                         my $values = $res->{values};
 
                         +{
                             name => $res->{name},
+                            (
+                                $tags ?
+                                    ( tags => $tags )
+                                    :
+                                    ()
+                            ),
                             values => [
                                 map {
                                     +{
