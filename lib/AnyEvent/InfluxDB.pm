@@ -22,6 +22,11 @@ has 'server' => (
     default => 'http://localhost:8086',
 );
 
+has 'persistent' => (
+    is => 'rw',
+    default => 1,
+);
+
 has '_is_ssl' => (
     is => 'lazy',
 );
@@ -209,7 +214,8 @@ sub _http_request {
         headers => {
             referer => undef,
             'user-agent' => "AnyEvent-InfluxDB/0.13",
-        }
+        },
+        persistent => $self->persistent
     );
 
     if ($self->has_jwt) {
