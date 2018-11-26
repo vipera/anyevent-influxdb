@@ -121,7 +121,7 @@ METHODS
 
   ping
         $cv = AE::cv;
-        $db->ping(
+        $guard = $db->ping(
             wait_for_leader => 2,
 
             on_success => $cv,
@@ -143,7 +143,7 @@ METHODS
   Managing Data
    write
         $cv = AE::cv;
-        $db->write(
+        $guard = $db->write(
             database => 'mydb',
             precision => 's',
             rp => 'last_day',
@@ -210,7 +210,7 @@ METHODS
   Querying Data
    select
         $cv = AE::cv;
-        $db->select(
+        $guard = $db->select(
             database => 'mydb',
 
             # return time in Unix epoch format
@@ -271,7 +271,7 @@ METHODS
   Database Management
    create_database
         $cv = AE::cv;
-        $db->create_database(
+        $guard = $db->create_database(
             # raw query
             q => "CREATE DATABASE mydb WITH DURATION 7d REPLICATION 3 SHARD DURATION 30m NAME oneweek",
 
@@ -303,7 +303,7 @@ METHODS
 
    drop_database
         $cv = AE::cv;
-        $db->drop_database(
+        $guard = $db->drop_database(
             # raw query
             q => "DROP DATABASE mydb",
 
@@ -325,7 +325,7 @@ METHODS
 
    drop_series
         $cv = AE::cv;
-        $db->drop_series(
+        $guard = $db->drop_series(
             database => 'mydb',
 
             # raw query
@@ -355,7 +355,7 @@ METHODS
 
    delete_series
         $cv = AE::cv;
-        $db->delete_series(
+        $guard = $db->delete_series(
             database => 'mydb',
 
             # raw query
@@ -381,7 +381,7 @@ METHODS
 
    drop_measurement
         $cv = AE::cv;
-        $db->drop_measurement(
+        $guard = $db->drop_measurement(
             database => 'mydb',
 
             # raw query
@@ -405,7 +405,7 @@ METHODS
 
    show_shards
         $cv = AE::cv;
-        $db->show_shards(
+        $guard = $db->show_shards(
             on_success => $cv,
             on_error => sub {
                 $cv->croak("Failed to list shards: @_");
@@ -427,7 +427,7 @@ METHODS
 
    show_shard_groups
         $cv = AE::cv;
-        $db->show_shard_groups(
+        $guard = $db->show_shard_groups(
             on_success => $cv,
             on_error => sub {
                 $cv->croak("Failed to list shard groups: @_");
@@ -452,7 +452,7 @@ METHODS
 
    drop_shard
         $cv = AE::cv;
-        $db->drop_shard(
+        $guard = $db->drop_shard(
             database => 'mydb',
 
             # raw query
@@ -476,7 +476,7 @@ METHODS
 
    show_queries
         $cv = AE::cv;
-        $db->show_queries(
+        $guard = $db->show_queries(
             on_success => $cv,
             on_error => sub {
                 $cv->croak("Failed to list shard groups: @_");
@@ -498,7 +498,7 @@ METHODS
 
    kill_query
         $cv = AE::cv;
-        $db->kill_query(
+        $guard = $db->kill_query(
             id => 36,
 
             # callbacks
@@ -517,7 +517,7 @@ METHODS
   Retention Policy Management
    create_retention_policy
         $cv = AE::cv;
-        $db->create_retention_policy(
+        $guard = $db->create_retention_policy(
             # raw query
             q => "CREATE RETENTION POLICY last_day ON mydb DURATION 1d REPLICATION 1",
 
@@ -547,7 +547,7 @@ METHODS
 
    alter_retention_policy
         $cv = AE::cv;
-        $db->alter_retention_policy(
+        $guard = $db->alter_retention_policy(
             # raw query
             q => "ALTER RETENTION POLICY last_day ON mydb DURATION 1d REPLICATION 1 DEFAULT",
 
@@ -577,7 +577,7 @@ METHODS
 
    drop_retention_policy
         $cv = AE::cv;
-        $db->drop_retention_policy(
+        $guard = $db->drop_retention_policy(
             # raw query
             q => "DROP RETENTION POLICY last_day ON mydb",
 
@@ -601,7 +601,7 @@ METHODS
   Schema Exploration
    show_databases
         $cv = AE::cv;
-        $db->show_databases(
+        $guard = $db->show_databases(
             on_success => $cv,
             on_error => sub {
                 $cv->croak("Failed to list databases: @_");
@@ -617,7 +617,7 @@ METHODS
 
    show_retention_policies
         $cv = AE::cv;
-        $db->show_retention_policies(
+        $guard = $db->show_retention_policies(
             # raw query
             q => "SHOW RETENTION POLICIES ON mydb",
 
@@ -648,7 +648,7 @@ METHODS
 
    show_series
         $cv = AE::cv;
-        $db->show_series(
+        $guard = $db->show_series(
             database => 'mydb',
 
             # raw query
@@ -683,7 +683,7 @@ METHODS
 
    show_measurements
         $cv = AE::cv;
-        $db->show_measurements(
+        $guard = $db->show_measurements(
             database => 'mydb',
 
             # raw query
@@ -720,7 +720,7 @@ METHODS
 
    show_tag_keys
         $cv = AE::cv;
-        $db->show_tag_keys(
+        $guard = $db->show_tag_keys(
             database => 'mydb',
 
             # raw query
@@ -756,7 +756,7 @@ METHODS
 
    show_tag_values
         $cv = AE::cv;
-        $db->show_tag_values(
+        $guard = $db->show_tag_values(
             database => 'mydb',
 
             # raw query
@@ -798,7 +798,7 @@ METHODS
 
    show_field_keys
         $cv = AE::cv;
-        $db->show_field_keys(
+        $guard = $db->show_field_keys(
             database => 'mydb',
 
             # raw query
@@ -832,7 +832,7 @@ METHODS
   User Management
    create_user
         $cv = AE::cv;
-        $db->create_user(
+        $guard = $db->create_user(
             # raw query
             q => "CREATE USER jdoe WITH PASSWORD 'mypassword' WITH ALL PRIVILEGES",
 
@@ -860,7 +860,7 @@ METHODS
 
    set_user_password
         $cv = AE::cv;
-        $db->set_user_password(
+        $guard = $db->set_user_password(
             # raw query
             q => "SET PASSWORD FOR jdoe = 'otherpassword'",
 
@@ -885,7 +885,7 @@ METHODS
 
    show_users
         $cv = AE::cv;
-        $db->show_users(
+        $guard = $db->show_users(
             on_success => $cv,
             on_error => sub {
                 $cv->croak("Failed to list users: @_");
@@ -905,7 +905,7 @@ METHODS
 
    grant_privileges
         $cv = AE::cv;
-        $db->grant_privileges(
+        $guard = $db->grant_privileges(
             # raw query
             q => "GRANT ALL ON mydb TO jdoe",
 
@@ -936,7 +936,7 @@ METHODS
 
    show_grants
         $cv = AE::cv;
-        $db->show_grants(
+        $guard = $db->show_grants(
             # raw query
             q => "SHOW GRANTS FOR jdoe",
 
@@ -963,7 +963,7 @@ METHODS
 
    revoke_privileges
         $cv = AE::cv;
-        $db->revoke_privileges(
+        $guard = $db->revoke_privileges(
             # raw query
             q => "REVOKE WRITE ON mydb FROM jdoe",
 
@@ -994,7 +994,7 @@ METHODS
 
    drop_user
         $cv = AE::cv;
-        $db->drop_user(
+        $guard = $db->drop_user(
             # raw query
             q => "DROP USER jdoe",
 
@@ -1017,7 +1017,7 @@ METHODS
   Continuous Queries
    create_continuous_query
         $cv = AE::cv;
-        $db->create_continuous_query(
+        $guard = $db->create_continuous_query(
             # raw query
             q => 'CREATE CONTINUOUS QUERY per5minutes ON mydb'
                 .' RESAMPLE EVERY 10s FOR 10m'
@@ -1049,7 +1049,7 @@ METHODS
 
    drop_continuous_query
         $cv = AE::cv;
-        $db->drop_continuous_query(
+        $guard = $db->drop_continuous_query(
             # raw query
             q => 'DROP CONTINUOUS QUERY per5minutes ON mydb',
 
@@ -1072,7 +1072,7 @@ METHODS
 
    show_continuous_queries
         $cv = AE::cv;
-        $db->show_continuous_queries(
+        $guard = $db->show_continuous_queries(
             database => 'mydb',
 
             on_success => $cv,
@@ -1101,7 +1101,7 @@ METHODS
 
    create_subscription
         $cv = AE::cv;
-        $db->create_subscription(
+        $guard = $db->create_subscription(
             # raw query
             q => 'CREATE SUBSCRIPTION alldata ON "mydb"."default"'
                 ." DESTINATIONS ANY 'udp://h1.example.com:9090', 'udp://h2.example.com:9090'",
@@ -1133,7 +1133,7 @@ METHODS
 
    show_subscriptions
         $cv = AE::cv;
-        $db->show_subscriptions(
+        $guard = $db->show_subscriptions(
             on_success => $cv,
             on_error => sub {
                 $cv->croak("Failed to list shards: @_");
@@ -1159,7 +1159,7 @@ METHODS
 
    drop_subscription
         $cv = AE::cv;
-        $db->drop_subscription(
+        $guard = $db->drop_subscription(
             # raw query
             q => 'DROP SUBSCRIPTION "alldata" ON "mydb"."default"',
 
@@ -1185,7 +1185,7 @@ METHODS
   Other
    query
         $cv = AE::cv;
-        $db->query(
+        $guard = $db->query(
             method => 'GET',
             query => {
                 db => 'mydb',
